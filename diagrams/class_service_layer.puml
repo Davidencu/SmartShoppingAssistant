@@ -1,0 +1,128 @@
+@startuml Service Layer
+skinparam classAttributeIconSize 0
+skinparam backgroundColor #FAFAFA
+skinparam class {
+    BackgroundColor #F0FDF4
+    BorderColor #16A34A
+    HeaderBackgroundColor #16A34A
+    HeaderFontColor White
+    FontSize 12
+}
+skinparam ArrowColor #16A34A
+skinparam linetype ortho
+
+title SmartShop — Service Layer (External API Wrappers)
+
+' ─── Config ──────────────────────────────────────────────────────────
+class Settings {
+    + supabase_url: str
+    + supabase_service_key: str
+    + gemini_api_key: str
+    + tavily_api_key: str
+    + jina_api_key: str
+    + lithic_api_key: str
+    + lemonsqueezy_webhook_secret: str
+    + lithic_environment: str
+    --
+    {static} + get() : Settings
+}
+
+' ─── AI / Search Services ────────────────────────────────────────────
+class GeminiService {
+    - client: genai.Client
+    - model_id: str = "gemini-1.5-flash"
+    --
+    + analyze_request(text: str, images: List[bytes]) : SearchIntent
+    + score_products(products: List[Product]) : List[ValueScore]
+    + generate_search_queries(intent: SearchIntent) : List[str]
+    + classify_shopping_intent(intent: SearchIntent) : bool
+}
+
+class TavilyService {
+    - client: TavilyClient
+    - max_results: int = 15
+    --
+    + search(queries: List[str]) : List[TavilyResult]
+}
+
+class JinaService {
+    - api_key: str
+    - reader_base_url: str = "https://r.jina.ai/"
+    --
+    + extract_markdown(url: str) : str
+    + extract_batch(urls: List[str]) : List[str]
+}
+
+' ─── Fintech Services ────────────────────────────────────────────────
+class LithicService {
+    - client: lithic.Lithic
+    --
+    + create_single_use_card(amount_cents: int) : VirtualCard
+    + close_card(card_id: str) : void
+    + void_card(card_id: str) : void
+    + get_card_pan(card_id: str) : str
+}
+
+class LemonSqueezyService {
+    - webhook_secret: str
+    --
+    + verify_signature(payload: bytes, sig: str) : bool
+    + parse_order_created(payload: dict) : TopUpEvent
+    + get_amount_cents(payload: dict) : int
+}
+
+' ─── Database Service ────────────────────────────────────────────────
+class SupabaseService {
+    - client: supabase.Client
+    --
+    + get_user(user_id: UUID) : User
+    + get_user_profile(user_id: UUID) : UserProfile
+    + get_wallet(user_id: UUID) : Wallet
+    + credit_wallet(wallet_id: UUID, amount: int, ref: str) : WalletTransaction
+    + freeze_funds(wallet_id: UUID, amount: int, order_id: UUID) : WalletTransaction
+    + deduct_funds(wallet_id: UUID, amount: int, order_id: UUID) : WalletTransaction
+    + refund_funds(wallet_id: UUID, amount: int, order_id: UUID) : WalletTransaction
+    + create_order(order_data: OrderCreate) : Order
+    + update_order_status(order_id: UUID, status: OrderStatus, reason: FailureReason) : void
+    + save_search_session(session: SearchSession) : void
+    + update_session_results(session_id: UUID, results: List[ScoredProduct]) : void
+}
+
+' ─── Transfer Objects ────────────────────────────────────────────────
+class TavilyResult {
+    + url: str
+    + title: str
+    + snippet: str
+    + score: float
+}
+
+class TopUpEvent {
+    + user_id: UUID
+    + amount_cents: int
+    + currency: str
+    + lemonsqueezy_order_id: str
+}
+
+class SearchIntent {
+    + raw_query: str
+    + refined_query: str
+    + image_descriptions: List[str]
+    + category: str
+    + constraints: dict
+    + is_valid_shopping_request: bool
+    + clarification_needed: str
+}
+
+' ─── Relationships ───────────────────────────────────────────────────
+GeminiService ..> SearchIntent : produces
+TavilyService ..> TavilyResult : produces
+LemonSqueezyService ..> TopUpEvent : produces
+
+GeminiService --> Settings : reads config
+TavilyService --> Settings : reads config
+JinaService --> Settings : reads config
+LithicService --> Settings : reads config
+LemonSqueezyService --> Settings : reads config
+SupabaseService --> Settings : reads config
+
+@enduml

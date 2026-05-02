@@ -1,0 +1,201 @@
+@startuml Domain Models
+skinparam classAttributeIconSize 0
+skinparam backgroundColor #FAFAFA
+skinparam class {
+    BackgroundColor #EEF2FF
+    BorderColor #4F46E5
+    HeaderBackgroundColor #4F46E5
+    HeaderFontColor White
+    FontSize 12
+}
+skinparam ArrowColor #4F46E5
+skinparam linetype ortho
+
+title SmartShop — Domain Model (Database Entities)
+
+' ─── Enums ───────────────────────────────────────────────────────────
+enum OrderStatus {
+    PENDING
+    PROCESSING
+    SUCCESS
+    FAILED
+    REFUNDED
+}
+
+enum TransactionType {
+    TOPUP
+    FREEZE
+    DEDUCT
+    REFUND
+}
+
+enum CardStatus {
+    ACTIVE
+    SPENT
+    VOIDED
+}
+
+enum SellerType {
+    DIRECT
+    THIRD_PARTY
+}
+
+enum SessionStatus {
+    SEARCHING
+    AWAITING_SELECTION
+    PROCESSING
+    COMPLETED
+    FAILED
+}
+
+enum FailureReason {
+    OUT_OF_STOCK
+    CAPTCHA_BLOCKED
+    TIMEOUT
+    PAYMENT_DECLINED
+}
+
+' ─── Core Entities ───────────────────────────────────────────────────
+class User {
+    + id: UUID <<PK>>
+    + email: str
+    + phone: str
+    + created_at: datetime
+    --
+    + get_wallet() : Wallet
+    + get_orders() : List[Order]
+}
+
+class UserProfile {
+    + user_id: UUID <<FK>>
+    + full_name: str
+    + shipping_address: Address
+}
+
+class Address {
+    + street: str
+    + city: str
+    + state: str
+    + country: str
+    + zip_code: str
+    + recipient_name: str
+}
+
+' ─── Wallet / Ledger ─────────────────────────────────────────────────
+class Wallet {
+    + id: UUID <<PK>>
+    + user_id: UUID <<FK>>
+    + balance_cents: int
+    + frozen_cents: int
+    + currency: str = "USD"
+    + updated_at: datetime
+    --
+    + available_balance() : int
+    + freeze(amount_cents: int) : bool
+    + unfreeze(amount_cents: int) : void
+    + deduct(amount_cents: int) : void
+}
+
+class WalletTransaction {
+    + id: UUID <<PK>>
+    + wallet_id: UUID <<FK>>
+    + type: TransactionType
+    + amount_cents: int
+    + reference_id: str
+    + order_id: UUID <<FK, nullable>>
+    + created_at: datetime
+}
+
+' ─── Search / Recommendation ─────────────────────────────────────────
+class SearchSession {
+    + id: UUID <<PK>>
+    + user_id: UUID <<FK>>
+    + raw_query: str
+    + image_urls: List[str]
+    + refined_query: str
+    + status: SessionStatus
+    + created_at: datetime
+}
+
+class Product {
+    + id: str
+    + title: str
+    + url: str
+    + store: str
+    + price_cents: int
+    + shipping_cost_cents: int
+    + rating: float
+    + review_count: int
+    + seller_type: SellerType
+    + in_stock: bool
+    + delivery_days: int
+    + image_url: str
+}
+
+class ValueScore {
+    + product_id: str
+    + total_score: float
+    + cost_efficiency: float
+    + quality_confidence: float
+    + logistics_score: float
+    + trust_score: float
+}
+
+class ScoredProduct {
+    + product: Product
+    + score: ValueScore
+    + rank: int
+}
+
+' ─── Order / Payment ─────────────────────────────────────────────────
+class Order {
+    + id: UUID <<PK>>
+    + user_id: UUID <<FK>>
+    + session_id: UUID <<FK>>
+    + product_snapshot: Product
+    + amount_cents: int
+    + status: OrderStatus
+    + failure_reason: FailureReason
+    + lithic_card_id: str
+    + fallback_url: str
+    + created_at: datetime
+    + completed_at: datetime
+}
+
+class VirtualCard {
+    + id: str <<Lithic ID>>
+    + order_id: UUID <<FK>>
+    + last4: str
+    + exp_month: int
+    + exp_year: int
+    + spend_limit_cents: int
+    + status: CardStatus
+    + created_at: datetime
+}
+
+' ─── Relationships ───────────────────────────────────────────────────
+User "1" --o "1" UserProfile : has
+UserProfile "1" *-- "1" Address : embeds
+
+User "1" --o "1" Wallet : owns
+Wallet "1" --o "0..*" WalletTransaction : records
+
+User "1" --o "0..*" SearchSession : initiates
+SearchSession "1" o-- "0..3" ScoredProduct : top results
+ScoredProduct "1" *-- "1" Product : wraps
+ScoredProduct "1" *-- "1" ValueScore : scored by
+
+User "1" --o "0..*" Order : places
+SearchSession "1" --o "0..*" Order : leads to
+Order "1" --o "0..1" VirtualCard : backed by
+
+WalletTransaction "0..*" --o "0..1" Order : linked to
+
+Order -- OrderStatus
+Order -- FailureReason
+WalletTransaction -- TransactionType
+VirtualCard -- CardStatus
+Product -- SellerType
+SearchSession -- SessionStatus
+
+@enduml

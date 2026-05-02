@@ -1,0 +1,155 @@
+@startuml Agent Layer
+skinparam classAttributeIconSize 0
+skinparam backgroundColor #FAFAFA
+skinparam class {
+    BackgroundColor #FFF7ED
+    BorderColor #EA580C
+    HeaderBackgroundColor #EA580C
+    HeaderFontColor White
+    FontSize 12
+}
+skinparam ArrowColor #EA580C
+skinparam linetype ortho
+
+title SmartShop — Agent & Orchestration Layer
+
+' ─── Value Scoring ────────────────────────────────────────────────────
+class ValueScorer {
+    - WEIGHT_COST: float = 0.35
+    - WEIGHT_QUALITY: float = 0.30
+    - WEIGHT_LOGISTICS: float = 0.20
+    - WEIGHT_TRUST: float = 0.15
+    --
+    + score(product: Product, market_avg_price: int) : ValueScore
+    - _cost_efficiency(product: Product, market_avg: int) : float
+    - _quality_confidence(product: Product) : float
+    - _logistics_score(product: Product) : float
+    - _trust_score(product: Product) : float
+}
+
+' ─── Brain Agent ──────────────────────────────────────────────────────
+class BrainAgent {
+    - gemini: GeminiService
+    - scorer: ValueScorer
+    --
+    + process_input(text: str, images: List[bytes]) : SearchIntent
+    + rank_products(products: List[Product]) : List[ScoredProduct]
+    + is_shopping_request(intent: SearchIntent) : bool
+    + request_clarification(intent: SearchIntent) : str
+}
+
+' ─── Search Agent ─────────────────────────────────────────────────────
+class SearchAgent {
+    - tavily: TavilyService
+    - jina: JinaService
+    - brain: BrainAgent
+    --
+    + search(intent: SearchIntent) : List[Product]
+    - _deduplicate(results: List[TavilyResult]) : List[TavilyResult]
+    - _extract_product(markdown: str, url: str) : Product
+    - _parse_price(raw: str) : int
+}
+
+' ─── Checkout Agent ───────────────────────────────────────────────────
+class CheckoutAgent {
+    - stagehand_api_key: str
+    --
+    + execute_checkout(product: Product, card: VirtualCard, address: Address) : CheckoutResult
+    - _navigate_to_product(url: str) : void
+    - _add_to_cart() : void
+    - _fill_shipping_form(address: Address) : void
+    - _fill_payment_form(card: VirtualCard) : void
+    - _confirm_order() : bool
+    - _detect_captcha() : bool
+    - _detect_out_of_stock() : bool
+}
+
+class CheckoutResult {
+    + success: bool
+    + failure_reason: FailureReason
+    + fallback_url: str
+    + confirmation_number: str
+    + amount_charged_cents: int
+}
+
+' ─── Saga / Orchestrator ──────────────────────────────────────────────
+class SagaState {
+    + order_id: UUID
+    + card_created: bool
+    + funds_frozen: bool
+    + checkout_attempted: bool
+    + card_voided: bool
+    + funds_refunded: bool
+}
+
+class CheckoutOrchestrator {
+    - brain: BrainAgent
+    - search_agent: SearchAgent
+    - checkout_agent: CheckoutAgent
+    - lithic: LithicService
+    - supabase: SupabaseService
+    --
+    + run_search(session_id: UUID, user: User) : List[ScoredProduct]
+    + run_checkout(session_id: UUID, product: ScoredProduct, user: User) : Order
+    - _validate_balance(wallet: Wallet, amount: int) : bool
+    - _create_card_and_freeze(order: Order) : VirtualCard
+    - _execute_with_saga(order: Order, card: VirtualCard, address: Address) : CheckoutResult
+    - _rollback(saga: SagaState) : void
+    - _finalize_success(order: Order, card: VirtualCard, result: CheckoutResult) : void
+}
+
+' ─── FastAPI Request/Response Schemas (API Layer) ─────────────────────
+class SearchRequest {
+    + session_id: UUID
+    + text: str
+    + image_base64_list: List[str]
+}
+
+class SearchResponse {
+    + session_id: UUID
+    + top_products: List[ScoredProduct]
+    + clarification_needed: str
+}
+
+class CheckoutRequest {
+    + session_id: UUID
+    + selected_product_id: str
+    + passkey_assertion: dict
+}
+
+class CheckoutResponse {
+    + order_id: UUID
+    + status: OrderStatus
+    + confirmation_number: str
+    + failure_reason: FailureReason
+    + fallback_url: str
+}
+
+class WalletResponse {
+    + balance_cents: int
+    + frozen_cents: int
+    + available_cents: int
+    + currency: str
+    + recent_transactions: List[WalletTransaction]
+}
+
+' ─── Relationships ────────────────────────────────────────────────────
+BrainAgent --> GeminiService : delegates to
+BrainAgent --> ValueScorer : scores with
+SearchAgent --> TavilyService : searches via
+SearchAgent --> JinaService : extracts via
+SearchAgent --> BrainAgent : ranks with
+CheckoutAgent ..> CheckoutResult : returns
+CheckoutOrchestrator --> BrainAgent : orchestrates
+CheckoutOrchestrator --> SearchAgent : orchestrates
+CheckoutOrchestrator --> CheckoutAgent : orchestrates
+CheckoutOrchestrator --> LithicService : card lifecycle
+CheckoutOrchestrator --> SupabaseService : persists to
+CheckoutOrchestrator *-- SagaState : tracks saga
+
+CheckoutOrchestrator ..> CheckoutRequest : accepts
+CheckoutOrchestrator ..> CheckoutResponse : returns
+CheckoutOrchestrator ..> SearchRequest : accepts
+CheckoutOrchestrator ..> SearchResponse : returns
+
+@enduml
