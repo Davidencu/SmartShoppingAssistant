@@ -1,50 +1,16 @@
-from pydantic import BaseModel, computed_field
-from uuid import UUID
-from datetime import datetime
-from enum import Enum
+from typing import Literal
+
+from pydantic import BaseModel
 
 
-class TransactionType(str, Enum):
-    TOPUP = "TOPUP"
-    FREEZE = "FREEZE"
-    DEDUCT = "DEDUCT"
-    REFUND = "REFUND"
+class WalletBalance(BaseModel):
+    balance: float
+    currency: str = "USD"
 
 
-class Wallet(BaseModel):
-    id: UUID
-    user_id: UUID
-    balance_cents: int
-    frozen_cents: int
-    currency: str
-    updated_at: datetime
-
-    @computed_field
-    @property
-    def available_cents(self) -> int:
-        return self.balance_cents - self.frozen_cents
+class TopUpRequest(BaseModel):
+    amount: Literal[10, 25, 40, 50, 80, 100]
 
 
-class WalletTransaction(BaseModel):
-    id: UUID
-    wallet_id: UUID
-    type: TransactionType
-    amount_cents: int
-    reference_id: str | None
-    order_id: UUID | None
-    created_at: datetime
-
-
-class WalletResponse(BaseModel):
-    wallet: Wallet
-    recent_transactions: list[WalletTransaction]
-
-
-class LemonSqueezyMeta(BaseModel):
-    event_name: str
-    custom_data: dict | None = None
-
-
-class LemonSqueezyWebhookPayload(BaseModel):
-    meta: LemonSqueezyMeta
-    data: dict
+class CheckoutResponse(BaseModel):
+    checkout_url: str

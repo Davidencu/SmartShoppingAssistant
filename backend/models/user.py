@@ -1,52 +1,62 @@
-from pydantic import BaseModel, Field, field_validator
-from uuid import UUID
-from datetime import datetime
 import re
+from typing import Optional
+
+from pydantic import BaseModel, field_validator
 
 
-class Address(BaseModel):
-    recipient_name: str = Field(..., min_length=2, max_length=100)
-    street: str = Field(..., min_length=3, max_length=200)
-    city: str = Field(..., min_length=2, max_length=100)
-    state: str | None = Field(default=None, max_length=100)
-    country: str = Field(default="RO", min_length=2, max_length=3)
-    zip_code: str = Field(..., min_length=3, max_length=10)
+class EmailCheckRequest(BaseModel):
+    email: str
+
+    @field_validator("email")
+    @classmethod
+    def validate_email(cls, v: str) -> str:
+        if not re.match(r"^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$", v):
+            raise ValueError("Invalid email format")
+        return v.lower()
 
 
-class ProfileCreate(BaseModel):
-    full_name: str = Field(..., min_length=2, max_length=100)
-    phone: str = Field(..., max_length=20)
-    address: Address
+class OTPRequest(BaseModel):
+    email: str
+    phone: str
+    street_address: str
+    city: str
+    state: Optional[str] = None
+    postal_code: str
+    country: str
+
+    @field_validator("email")
+    @classmethod
+    def validate_email(cls, v: str) -> str:
+        if not re.match(r"^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$", v):
+            raise ValueError("Invalid email format")
+        return v.lower()
 
     @field_validator("phone")
     @classmethod
     def validate_phone(cls, v: str) -> str:
-        clean = re.sub(r"[\s\-\(\)]", "", v)
-        if not re.match(r"^\+?[1-9]\d{6,14}$", clean):
-            raise ValueError("Invalid phone number — use international format, e.g. +40712345678")
-        return clean
+        if not re.match(r"^\+[1-9]\d{6,14}$", v):
+            raise ValueError("Phone must be in E.164 format: +CountryCode followed by digits")
+        return v
 
 
-class UserProfile(BaseModel):
-    id: UUID
-    full_name: str
-    phone: str
-    created_at: datetime
+class OTPVerifyRequest(BaseModel):
+    email: str
+    otp: str
 
 
-class UserAddress(BaseModel):
-    id: UUID
-    user_id: UUID
-    recipient_name: str
-    street: str
-    city: str
-    state: str | None
-    country: str
-    zip_code: str
-    is_default: bool
-    created_at: datetime
+class PasskeyRegisterRequest(BaseModel):
+    email: str
+    credential: dict
 
 
-class ProfileResponse(BaseModel):
-    profile: UserProfile
-    address: UserAddress
+class PasskeyChallengeRequest(BaseModel):
+    email: str
+
+
+class PasskeyVerifyRequest(BaseModel):
+    email: str
+    credential: dict
+
+
+class MagicLinkVerifyRequest(BaseModel):
+    access_token: str

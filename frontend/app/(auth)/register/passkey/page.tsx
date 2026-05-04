@@ -1,5 +1,5 @@
 import PasskeyEnrollment from "@/components/auth/PasskeyEnrollment";
 
-export default function PasskeySetupPage() {
+export default function PasskeyPage() {
   return <PasskeyEnrollment />;
 }

@@ -1,48 +1,65 @@
-import { redirect } from "next/navigation";
-import { createClient } from "@/lib/supabase/server";
-import { Wallet, ShoppingBag, LogOut } from "lucide-react";
-import Link from "next/link";
+"use client";
 
-export default async function DashboardLayout({
-  children,
-}: {
-  children: React.ReactNode;
-}) {
-  const supabase = await createClient();
-  const { data: { session } } = await supabase.auth.getSession();
-  if (!session) redirect("/login");
+import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
+import { getBalance } from "@/lib/api";
+import { Loader2 } from "lucide-react";
+
+export default function DashboardLayout({ children }: { children: React.ReactNode }) {
+  const router = useRouter();
+  const [ready, setReady] = useState(false);
+
+  useEffect(() => {
+    const token = localStorage.getItem("smartshop_token");
+    if (!token) {
+      router.replace("/login");
+      return;
+    }
+    getBalance(token)
+      .then((wallet) => {
+        if (wallet.balance <= 0) {
+          router.replace("/wallet");
+        } else {
+          setReady(true);
+        }
+      })
+      .catch(() => {
+        localStorage.removeItem("smartshop_token");
+        router.replace("/login");
+      });
+  }, [router]);
+
+  if (!ready) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <Loader2 className="animate-spin w-8 h-8 text-indigo-600" />
+      </div>
+    );
+  }
 
   return (
-    <div className="flex min-h-screen flex-col">
-      <nav className="border-b border-slate-200 bg-white px-6 py-3">
-        <div className="mx-auto flex max-w-5xl items-center justify-between">
-          <Link href="/dashboard" className="flex items-center gap-2 font-bold text-slate-900">
-            <ShoppingBag className="h-5 w-5 text-indigo-600" />
-            SmartShop
-          </Link>
-          <div className="flex items-center gap-4">
-            <Link
-              href="/dashboard/wallet"
-              className="flex items-center gap-1.5 text-sm text-slate-600 hover:text-slate-900"
-            >
-              <Wallet className="h-4 w-4" />
-              Wallet
-            </Link>
-            <form action="/auth/signout" method="post">
-              <button
-                type="submit"
-                className="flex items-center gap-1.5 text-sm text-slate-500 hover:text-slate-900"
-              >
-                <LogOut className="h-4 w-4" />
-                Sign out
-              </button>
-            </form>
-          </div>
+    <main className="min-h-screen bg-gray-50">
+      <nav className="bg-white border-b px-6 py-4 flex items-center justify-between">
+        <span className="font-bold text-indigo-700 text-lg">SmartShop</span>
+        <div className="flex items-center gap-4">
+          <button
+            onClick={() => router.push("/wallet")}
+            className="text-sm text-indigo-600 hover:underline"
+          >
+            Wallet
+          </button>
+          <button
+            onClick={() => {
+              localStorage.removeItem("smartshop_token");
+              router.replace("/login");
+            }}
+            className="text-sm text-gray-500 hover:text-red-500"
+          >
+            Sign out
+          </button>
         </div>
       </nav>
-      <main className="flex-1 px-6 py-8">
-        <div className="mx-auto max-w-5xl">{children}</div>
-      </main>
-    </div>
+      <div className="max-w-3xl mx-auto p-6">{children}</div>
+    </main>
   );
 }

@@ -1,43 +1,24 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import React from "react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import LoginForm from "@/components/auth/LoginForm";
+import * as api from "@/lib/api";
+import * as webauthn from "@/lib/webauthn";
 
-const mockSignInWithOtp = jest.fn();
-const mockListFactors = jest.fn();
-const mockChallenge = jest.fn();
-const mockVerify = jest.fn();
-const mockRouterReplace = jest.fn();
-
-jest.mock("@/lib/supabase/client", () => ({
-  createClient: () => ({
-    auth: {
-      signInWithOtp: mockSignInWithOtp,
-      mfa: {
-        listFactors: mockListFactors,
-        challenge: mockChallenge,
-        verify: mockVerify,
-      },
-    },
-  }),
-}));
+const mockPush = jest.fn();
+const mockReplace = jest.fn();
 
 jest.mock("next/navigation", () => ({
-  useRouter: () => ({ replace: mockRouterReplace }),
+  useRouter: () => ({ push: mockPush, replace: mockReplace }),
 }));
-
-jest.mock("@simplewebauthn/browser", () => ({
-  browserSupportsWebAuthn: jest.fn(() => false),
-  startAuthentication: jest.fn(),
-}));
-
-import { browserSupportsWebAuthn, startAuthentication } from "@simplewebauthn/browser";
+jest.mock("@/lib/api");
+jest.mock("@/lib/webauthn");
 
 describe("LoginForm", () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    mockListFactors.mockResolvedValue({ data: { webauthn: [] }, error: null });
-    mockSignInWithOtp.mockResolvedValue({ data: {}, error: null });
-    (browserSupportsWebAuthn as jest.Mock).mockReturnValue(false);
+    mockPush.mockClear();
+    mockReplace.mockClear();
   });
 
   it("renders email input and continue button", () => {
@@ -46,71 +27,66 @@ describe("LoginForm", () => {
     expect(screen.getByRole("button", { name: /continue/i })).toBeInTheDocument();
   });
 
-  it("shows register link", () => {
+  it("shows validation error for empty submit", async () => {
     render(<LoginForm />);
-    expect(screen.getByRole("link", { name: /create one/i })).toBeInTheDocument();
+    fireEvent.submit(screen.getByRole("button", { name: /continue/i }));
+    await waitFor(() => {
+      expect(screen.getByText(/email is required/i)).toBeInTheDocument();
+    });
   });
 
-  it("shows OTP-sent state after submitting email (no passkey)", async () => {
+  it("shows validation error for invalid email format", async () => {
     render(<LoginForm />);
-    const user = userEvent.setup();
+    await userEvent.type(screen.getByPlaceholderText("you@example.com"), "notanemail");
+    fireEvent.submit(screen.getByRole("button", { name: /continue/i }));
+    await waitFor(() => {
+      expect(screen.getByText(/valid email/i)).toBeInTheDocument();
+    });
+  });
 
-    await user.type(screen.getByPlaceholderText("you@example.com"), "test@example.com");
-    await user.click(screen.getByRole("button", { name: /continue/i }));
+  it("redirects to /register if email is not found", async () => {
+    jest.mocked(api.checkEmail).mockResolvedValue({ exists: false });
+
+    render(<LoginForm />);
+    await userEvent.type(screen.getByPlaceholderText("you@example.com"), "new@example.com");
+    fireEvent.submit(screen.getByRole("button", { name: /continue/i }));
 
     await waitFor(() => {
-      expect(screen.getByText(/check your inbox/i)).toBeInTheDocument();
+      expect(api.checkEmail).toHaveBeenCalledWith("new@example.com");
+      expect(mockPush).toHaveBeenCalledWith("/register");
     });
-    expect(mockSignInWithOtp).toHaveBeenCalledWith(
-      expect.objectContaining({ email: "test@example.com" })
-    );
   });
 
-  it("does not submit with empty email", async () => {
-    render(<LoginForm />);
-    const user = userEvent.setup();
-    await user.click(screen.getByRole("button", { name: /continue/i }));
-    expect(mockSignInWithOtp).not.toHaveBeenCalled();
-    expect(mockListFactors).not.toHaveBeenCalled();
-  });
+  it("triggers passkey auth and stores token if email exists", async () => {
+    jest.mocked(api.checkEmail).mockResolvedValue({ exists: true });
+    jest.mocked(api.getPasskeyChallenge).mockResolvedValue({ options: {} });
+    jest.mocked(webauthn.authenticatePasskey).mockResolvedValue({} as never);
+    jest.mocked(api.verifyPasskey).mockResolvedValue({ token: "jwt-token" });
 
-  it("shows error message when signInWithOtp fails", async () => {
-    mockSignInWithOtp.mockResolvedValue({
-      data: {},
-      error: new Error("Email not allowed"),
-    });
+    const mockSetItem = jest.spyOn(Storage.prototype, "setItem");
 
     render(<LoginForm />);
-    const user = userEvent.setup();
-    await user.type(screen.getByPlaceholderText("you@example.com"), "bad@example.com");
-    await user.click(screen.getByRole("button", { name: /continue/i }));
+    await userEvent.type(screen.getByPlaceholderText("you@example.com"), "user@example.com");
+    fireEvent.submit(screen.getByRole("button", { name: /continue/i }));
 
     await waitFor(() => {
-      expect(screen.getByText(/email not allowed/i)).toBeInTheDocument();
+      expect(mockSetItem).toHaveBeenCalledWith("smartshop_token", "jwt-token");
+      expect(mockPush).toHaveBeenCalledWith("/dashboard");
     });
+
+    mockSetItem.mockRestore();
   });
 
-  it("triggers passkey flow when passkey is enrolled and browser supports it", async () => {
-    (browserSupportsWebAuthn as jest.Mock).mockReturnValue(true);
-    mockListFactors.mockResolvedValue({
-      data: { webauthn: [{ id: "factor-1" }] },
-      error: null,
-    });
-    mockChallenge.mockResolvedValue({
-      data: {
-        id: "challenge-1",
-        webAuthn: { requestOptions: {} },
-      },
-      error: null,
-    });
-    (startAuthentication as jest.Mock).mockResolvedValue({ id: "cred-1" });
-    mockVerify.mockResolvedValue({ data: {}, error: null });
+  it("shows error when passkey auth fails", async () => {
+    jest.mocked(api.checkEmail).mockResolvedValue({ exists: true });
+    jest.mocked(api.getPasskeyChallenge).mockRejectedValue(new Error("Auth failed"));
 
     render(<LoginForm />);
-    const user = userEvent.setup();
-    await user.type(screen.getByPlaceholderText("you@example.com"), "user@example.com");
-    await user.click(screen.getByRole("button", { name: /continue/i }));
+    await userEvent.type(screen.getByPlaceholderText("you@example.com"), "user@example.com");
+    fireEvent.submit(screen.getByRole("button", { name: /continue/i }));
 
-    await waitFor(() => expect(mockRouterReplace).toHaveBeenCalledWith("/dashboard"));
+    await waitFor(() => {
+      expect(screen.getByText(/auth failed/i)).toBeInTheDocument();
+    });
   });
 });

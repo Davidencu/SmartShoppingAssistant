@@ -1,29 +1,35 @@
+import React from "react";
 import { render, screen } from "@testing-library/react";
 import BalanceDisplay from "@/components/wallet/BalanceDisplay";
 
 describe("BalanceDisplay", () => {
-  it("formats zero balance correctly", () => {
-    render(<BalanceDisplay availableCents={0} />);
+  it("renders a formatted USD balance", () => {
+    render(<BalanceDisplay balance={50} currency="USD" />);
+    expect(screen.getByText("$50.00")).toBeInTheDocument();
+  });
+
+  it("renders $0.00 when balance is zero", () => {
+    render(<BalanceDisplay balance={0} currency="USD" />);
     expect(screen.getByText("$0.00")).toBeInTheDocument();
   });
 
-  it("formats non-zero balance correctly", () => {
-    render(<BalanceDisplay availableCents={4999} />);
-    expect(screen.getByText("$49.99")).toBeInTheDocument();
+  it("shows top-up prompt when balance is 0", () => {
+    render(<BalanceDisplay balance={0} currency="USD" />);
+    expect(screen.getByText(/top up your wallet/i)).toBeInTheDocument();
   });
 
-  it("formats large balance correctly", () => {
-    render(<BalanceDisplay availableCents={100000} />);
-    expect(screen.getByText("$1,000.00")).toBeInTheDocument();
+  it("does not show top-up prompt when balance is positive", () => {
+    render(<BalanceDisplay balance={25} currency="USD" />);
+    expect(screen.queryByText(/top up your wallet/i)).not.toBeInTheDocument();
   });
 
-  it("shows available balance label", () => {
-    render(<BalanceDisplay availableCents={0} />);
-    expect(screen.getByText(/available balance/i)).toBeInTheDocument();
+  it("shows top-up prompt for negative balance", () => {
+    render(<BalanceDisplay balance={-1} currency="USD" />);
+    expect(screen.getByText(/top up your wallet/i)).toBeInTheDocument();
   });
 
-  it("respects custom currency", () => {
-    render(<BalanceDisplay availableCents={5000} currency="EUR" />);
-    expect(screen.getByText(/€/)).toBeInTheDocument();
+  it("formats large balances correctly", () => {
+    render(<BalanceDisplay balance={100} currency="USD" />);
+    expect(screen.getByText("$100.00")).toBeInTheDocument();
   });
 });

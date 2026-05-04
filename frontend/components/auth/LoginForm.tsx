@@ -2,159 +2,145 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { Fingerprint, Mail, Loader2, AlertCircle } from "lucide-react";
-import { createClient } from "@/lib/supabase/client";
-import {
-  startAuthentication,
-  browserSupportsWebAuthn,
-} from "@simplewebauthn/browser";
-import Link from "next/link";
-
-type Step = "email" | "passkey" | "otp-sent";
+import { Fingerprint, Loader2 } from "lucide-react";
+import { checkEmail, getPasskeyChallenge, verifyPasskey } from "@/lib/api";
+import { authenticatePasskey } from "@/lib/webauthn";
+import type { PublicKeyCredentialRequestOptionsJSON } from "@simplewebauthn/browser";
 
 export default function LoginForm() {
   const router = useRouter();
-  const [step, setStep] = useState<Step>("email");
   const [email, setEmail] = useState("");
+  const [emailError, setEmailError] = useState("");
+  const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [step, setStep] = useState<"email" | "passkey">("email");
 
-  const supabase = createClient();
+  const validateEmail = (v: string) => {
+    if (!v) return "Email is required";
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v))
+      return "Enter a valid email (user@domain.com)";
+    return "";
+  };
 
-  async function handleEmailSubmit(e: React.FormEvent) {
+  const handleEmailSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setError(null);
-    if (!email.trim()) return;
-
+    const err = validateEmail(email);
+    if (err) {
+      setEmailError(err);
+      return;
+    }
+    setEmailError("");
     setLoading(true);
+    setError("");
     try {
-      const { data: factors } = await supabase.auth.mfa.listFactors();
-      const hasPasskey =
-        browserSupportsWebAuthn() &&
-        (factors?.webauthn?.length ?? 0) > 0;
-
-      if (hasPasskey) {
+      const { exists } = await checkEmail(email);
+      if (exists) {
         setStep("passkey");
-        await handlePasskeyLogin();
+        await triggerPasskeyAuth();
       } else {
-        const { error: otpErr } = await supabase.auth.signInWithOtp({
-          email,
-          options: {
-            shouldCreateUser: false,
-            emailRedirectTo: `${window.location.origin}/auth/callback?next=/dashboard`,
-          },
-        });
-        if (otpErr) throw otpErr;
-        setStep("otp-sent");
+        sessionStorage.setItem("register_email", email);
+        router.push("/register");
       }
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Login failed. Please try again.");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function handlePasskeyLogin() {
-    setLoading(true);
-    setError(null);
-    try {
-      const { data: factors } = await supabase.auth.mfa.listFactors();
-      const factor = factors?.webauthn?.[0];
-      if (!factor) throw new Error("No passkey found for this account.");
-
-      const { data: challenge, error: challengeErr } =
-        await supabase.auth.mfa.challenge({ factorId: factor.id });
-      if (challengeErr) throw challengeErr;
-
-      const assertion = await startAuthentication({
-        optionsJSON: (challenge as { webAuthn?: { requestOptions: PublicKeyCredentialRequestOptionsJSON } }).webAuthn?.requestOptions!,
-      });
-
-      const { error: verifyErr } = await supabase.auth.mfa.verify({
-        factorId: factor.id,
-        challengeId: challenge.id,
-        code: JSON.stringify(assertion),
-      });
-      if (verifyErr) throw verifyErr;
-
-      router.replace("/dashboard");
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Passkey authentication failed.");
+      setError(err instanceof Error ? err.message : "Something went wrong");
       setStep("email");
     } finally {
       setLoading(false);
     }
-  }
+  };
 
-  if (step === "otp-sent") {
-    return (
-      <div className="rounded-2xl border border-slate-200 bg-white p-8 shadow-sm text-center space-y-4">
-        <Mail className="mx-auto h-10 w-10 text-indigo-500" />
-        <h2 className="text-lg font-semibold text-slate-900">Check your inbox</h2>
-        <p className="text-sm text-slate-500">
-          We sent a magic link to <strong>{email}</strong>. Click it to sign in.
-        </p>
-        <button
-          onClick={() => setStep("email")}
-          className="text-sm text-indigo-600 hover:underline"
-        >
-          Use a different email
-        </button>
-      </div>
-    );
-  }
+  const triggerPasskeyAuth = async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const { options } = await getPasskeyChallenge(email);
+      const credential = await authenticatePasskey(
+        options as PublicKeyCredentialRequestOptionsJSON
+      );
+      const { token } = await verifyPasskey(email, credential);
+      localStorage.setItem("smartshop_token", token);
+      router.push("/dashboard");
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Authentication failed");
+      setStep("email");
+    } finally {
+      setLoading(false);
+    }
+  };
 
   return (
-    <div className="rounded-2xl border border-slate-200 bg-white p-8 shadow-sm space-y-6">
-      <div>
-        <h2 className="text-xl font-semibold text-slate-900">Sign in</h2>
-        <p className="mt-1 text-sm text-slate-500">
-          Use your passkey or receive a magic link.
-        </p>
-      </div>
+    <div>
+      <h2 className="text-xl font-semibold mb-6 text-center">Sign in</h2>
 
-      {error && (
-        <div className="flex items-start gap-2 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">
-          <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
-          {error}
+      {step === "email" ? (
+        <form onSubmit={handleEmailSubmit} className="space-y-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              Email address
+            </label>
+            <input
+              type="email"
+              value={email}
+              onChange={(e) => {
+                setEmail(e.target.value);
+                if (emailError) setEmailError(validateEmail(e.target.value));
+              }}
+              placeholder="you@example.com"
+              className={`w-full border rounded-lg px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-400 ${
+                emailError ? "border-red-400" : "border-gray-300"
+              }`}
+            />
+            {emailError && (
+              <p className="text-red-500 text-xs mt-1">{emailError}</p>
+            )}
+          </div>
+
+          {error && <p className="text-red-500 text-sm text-center">{error}</p>}
+
+          <button
+            type="submit"
+            disabled={loading}
+            className="w-full bg-indigo-600 text-white rounded-lg py-3 font-semibold hover:bg-indigo-700 disabled:opacity-50 flex items-center justify-center gap-2"
+          >
+            {loading && <Loader2 className="animate-spin w-4 h-4" />}
+            Continue
+          </button>
+
+          <p className="text-center text-sm text-gray-500">
+            No account?{" "}
+            <button
+              type="button"
+              onClick={() => router.push("/register")}
+              className="text-indigo-600 hover:underline"
+            >
+              Sign up
+            </button>
+          </p>
+        </form>
+      ) : (
+        <div className="text-center space-y-6">
+          <Fingerprint className="mx-auto w-20 h-20 text-indigo-500" />
+          <p className="text-gray-700 font-medium">
+            Authenticating with Face ID / Touch ID
+          </p>
+          <p className="text-sm text-gray-500">{email}</p>
+
+          {error && <p className="text-red-500 text-sm">{error}</p>}
+
+          {error && (
+            <button
+              onClick={triggerPasskeyAuth}
+              disabled={loading}
+              className="w-full bg-indigo-600 text-white rounded-lg py-3 font-semibold hover:bg-indigo-700 disabled:opacity-50 flex items-center justify-center gap-2"
+            >
+              {loading && <Loader2 className="animate-spin w-4 h-4" />}
+              Try again
+            </button>
+          )}
+
+          {loading && <Loader2 className="animate-spin w-6 h-6 text-indigo-500 mx-auto" />}
         </div>
       )}
-
-      <form onSubmit={handleEmailSubmit} className="space-y-4">
-        <div>
-          <label className="block text-sm font-medium text-slate-700 mb-1">
-            Email address
-          </label>
-          <input
-            type="email"
-            required
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            placeholder="you@example.com"
-            className="w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-          />
-        </div>
-
-        <button
-          type="submit"
-          disabled={loading}
-          className="flex w-full items-center justify-center gap-2 rounded-lg bg-indigo-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-60"
-        >
-          {loading ? (
-            <Loader2 className="h-4 w-4 animate-spin" />
-          ) : (
-            <Fingerprint className="h-4 w-4" />
-          )}
-          {loading ? "Authenticating…" : "Continue"}
-        </button>
-      </form>
-
-      <p className="text-center text-sm text-slate-500">
-        No account yet?{" "}
-        <Link href="/register" className="text-indigo-600 hover:underline">
-          Create one
-        </Link>
-      </p>
     </div>
   );
 }

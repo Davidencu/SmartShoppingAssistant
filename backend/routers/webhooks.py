@@ -1,54 +1,51 @@
 import hashlib
 import hmac
 import json
-from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, HTTPException, Request
 
-from core.config import get_settings
-from services.supabase_service import SupabaseService
+from core.config import settings
+from services.supabase_service import get_supabase_admin
 
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
 
-_TOPUP_EVENT = "order_created"
 
-
-def _verify_lemonsqueezy_signature(payload: bytes, signature: str, secret: str) -> bool:
-    expected = hmac.new(secret.encode(), payload, hashlib.sha256).hexdigest()
-    return hmac.compare_digest(expected, signature)
-
-
-@router.post("/lemonsqueezy", status_code=status.HTTP_200_OK)
-async def lemonsqueezy_webhook(request: Request) -> dict:
-    settings = get_settings()
-    raw_body = await request.body()
+@router.post("/lemonsqueezy")
+async def lemonsqueezy_webhook(request: Request):
+    body = await request.body()
     signature = request.headers.get("X-Signature", "")
 
-    if not _verify_lemonsqueezy_signature(raw_body, signature, settings.lemonsqueezy_webhook_secret):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid signature")
+    expected = hmac.new(
+        settings.lemonsqueezy_webhook_secret.encode(),
+        body,
+        hashlib.sha256,
+    ).hexdigest()
 
-    payload = json.loads(raw_body)
-    event_name = payload.get("meta", {}).get("event_name", "")
+    if not hmac.compare_digest(expected, signature):
+        raise HTTPException(status_code=401, detail="Invalid webhook signature")
 
-    if event_name != _TOPUP_EVENT:
-        return {"status": "ignored"}
+    payload = json.loads(body)
+    event_name: str = payload.get("meta", {}).get("event_name", "")
 
-    custom_data = payload.get("meta", {}).get("custom_data", {})
-    user_id_str = custom_data.get("user_id")
-    if not user_id_str:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Missing user_id in custom_data")
+    if event_name == "order_created":
+        custom_data = payload.get("meta", {}).get("custom_data", {})
+        user_id = custom_data.get("user_id")
+        if not user_id:
+            raise HTTPException(status_code=400, detail="Missing user_id in webhook payload")
 
-    try:
-        user_id = UUID(user_id_str)
-    except ValueError:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid user_id format")
+        total_cents: int = payload["data"]["attributes"]["total"]
+        amount = total_cents / 100.0
 
-    attributes = payload.get("data", {}).get("attributes", {})
-    total_cents = int(round(float(attributes.get("total", 0)) * 100))
-    if total_cents <= 0:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid amount")
+        supabase = get_supabase_admin()
+        wallet = (
+            supabase.table("wallets").select("balance").eq("user_id", user_id).execute()
+        )
+        if not wallet.data:
+            raise HTTPException(status_code=404, detail="Wallet not found")
 
-    order_id = str(payload.get("data", {}).get("id", ""))
-    SupabaseService().credit_wallet(user_id, total_cents, reference_id=order_id)
+        new_balance = float(wallet.data[0]["balance"]) + amount
+        supabase.table("wallets").update({"balance": new_balance}).eq(
+            "user_id", user_id
+        ).execute()
 
-    return {"status": "credited"}
+    return {"message": "ok"}

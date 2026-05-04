@@ -1,166 +1,164 @@
 import hashlib
 import hmac
 import json
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
-from unittest.mock import MagicMock
-from uuid import uuid4
-
-from models.wallet import Wallet, WalletTransaction, TransactionType
-from services.supabase_service import SupabaseService
-from routers.webhooks import _verify_lemonsqueezy_signature
-from tests.conftest import (
-    TEST_USER_ID,
-    TEST_WALLET_ID,
-    NOW,
-    _make_wallet_row,
-    _make_txn_row,
-)
 
 
-# ── Wallet model ──────────────────────────────────────────────────────────────
+class TestGetBalance:
+    def test_unauthenticated(self, client):
+        resp = client.get("/wallet/balance")
+        assert resp.status_code == 401
 
-class TestWalletModel:
-    def test_available_cents_is_balance_minus_frozen(self):
-        wallet = Wallet(
-            id=uuid4(),
-            user_id=TEST_USER_ID,
-            balance_cents=10000,
-            frozen_cents=3000,
-            currency="USD",
-            updated_at=NOW,
-        )
-        assert wallet.available_cents == 7000
-
-    def test_available_cents_zero_when_fully_frozen(self):
-        wallet = Wallet(
-            id=uuid4(),
-            user_id=TEST_USER_ID,
-            balance_cents=5000,
-            frozen_cents=5000,
-            currency="USD",
-            updated_at=NOW,
-        )
-        assert wallet.available_cents == 0
-
-    def test_transaction_type_enum_values(self):
-        assert TransactionType.TOPUP == "TOPUP"
-        assert TransactionType.FREEZE == "FREEZE"
-        assert TransactionType.DEDUCT == "DEDUCT"
-        assert TransactionType.REFUND == "REFUND"
-
-
-# ── SupabaseService.get_wallet ────────────────────────────────────────────────
-
-class TestSupabaseServiceGetWallet:
-    def _svc(self, db: MagicMock) -> SupabaseService:
-        return SupabaseService(client=db)
-
-    def test_returns_wallet_with_transactions(self):
-        db = MagicMock()
-
-        wallet_chain = db.table.return_value.select.return_value.eq.return_value.single.return_value.execute
-        wallet_chain.return_value.data = _make_wallet_row(TEST_USER_ID, balance=10000)
-
-        txn_chain = (
-            db.table.return_value
-            .select.return_value
-            .eq.return_value
-            .order.return_value
-            .limit.return_value
-            .execute
-        )
-        txn_chain.return_value.data = [
-            _make_txn_row(TEST_WALLET_ID, "TOPUP", 10000)
+    def test_success(self, client, mock_supabase, auth_token):
+        mock_supabase.table.return_value.select.return_value.eq.return_value.execute.return_value.data = [
+            {"balance": "50.00", "currency": "USD"}
         ]
+        resp = client.get(
+            "/wallet/balance", headers={"Authorization": f"Bearer {auth_token}"}
+        )
+        assert resp.status_code == 200
+        assert resp.json()["balance"] == 50.0
+        assert resp.json()["currency"] == "USD"
 
-        def table_side(name):
-            m = MagicMock()
-            if name == "wallets":
-                m.select.return_value.eq.return_value.single.return_value.execute.return_value.data = (
-                    _make_wallet_row(TEST_USER_ID, balance=10000)
+    def test_wallet_not_found(self, client, mock_supabase, auth_token):
+        mock_supabase.table.return_value.select.return_value.eq.return_value.execute.return_value.data = []
+        resp = client.get(
+            "/wallet/balance", headers={"Authorization": f"Bearer {auth_token}"}
+        )
+        assert resp.status_code == 404
+
+
+class TestCreateCheckout:
+    def test_unauthenticated(self, client):
+        resp = client.post("/wallet/checkout", json={"amount": 10})
+        assert resp.status_code == 401
+
+    def test_invalid_amount(self, client, auth_token):
+        resp = client.post(
+            "/wallet/checkout",
+            json={"amount": 99},
+            headers={"Authorization": f"Bearer {auth_token}"},
+        )
+        assert resp.status_code == 422
+
+    def test_valid_amounts_accepted(self, client, auth_token):
+        import routers.wallet as wallet_module
+        wallet_module._ls_store_id = "store-123"
+
+        for amount in [10, 25, 40, 50, 80, 100]:
+            with patch("routers.wallet.httpx.AsyncClient") as mock_cls:
+                mock_resp = MagicMock()
+                mock_resp.status_code = 201
+                mock_resp.json.return_value = {
+                    "data": {"attributes": {"url": "https://checkout.lemonsqueezy.com/test"}}
+                }
+                mock_ac = AsyncMock()
+                mock_ac.post = AsyncMock(return_value=mock_resp)
+                mock_ac.__aenter__ = AsyncMock(return_value=mock_ac)
+                mock_ac.__aexit__ = AsyncMock(return_value=None)
+                mock_cls.return_value = mock_ac
+
+                resp = client.post(
+                    "/wallet/checkout",
+                    json={"amount": amount},
+                    headers={"Authorization": f"Bearer {auth_token}"},
                 )
-            else:
-                m.select.return_value.eq.return_value.order.return_value.limit.return_value.execute.return_value.data = [
-                    _make_txn_row(TEST_WALLET_ID, "TOPUP", 10000)
-                ]
-            return m
+            assert resp.status_code == 200, f"Amount {amount} should be valid"
+            assert "checkout_url" in resp.json()
 
-        db.table.side_effect = table_side
-        svc = self._svc(db)
-        result = svc.get_wallet(TEST_USER_ID)
+    def test_success_returns_checkout_url(self, client, auth_token):
+        import routers.wallet as wallet_module
+        wallet_module._ls_store_id = "store-123"
 
-        assert result.wallet.balance_cents == 10000
-        assert len(result.recent_transactions) == 1
-        assert result.recent_transactions[0].type == TransactionType.TOPUP
+        with patch("routers.wallet.httpx.AsyncClient") as mock_cls:
+            mock_resp = MagicMock()
+            mock_resp.status_code = 201
+            mock_resp.json.return_value = {
+                "data": {"attributes": {"url": "https://checkout.lemonsqueezy.com/buy/test"}}
+            }
+            mock_ac = AsyncMock()
+            mock_ac.post = AsyncMock(return_value=mock_resp)
+            mock_ac.__aenter__ = AsyncMock(return_value=mock_ac)
+            mock_ac.__aexit__ = AsyncMock(return_value=None)
+            mock_cls.return_value = mock_ac
 
-    def test_empty_transaction_history(self):
-        db = MagicMock()
+            resp = client.post(
+                "/wallet/checkout",
+                json={"amount": 25},
+                headers={"Authorization": f"Bearer {auth_token}"},
+            )
 
-        def table_side(name):
-            m = MagicMock()
-            if name == "wallets":
-                m.select.return_value.eq.return_value.single.return_value.execute.return_value.data = (
-                    _make_wallet_row(TEST_USER_ID)
-                )
-            else:
-                m.select.return_value.eq.return_value.order.return_value.limit.return_value.execute.return_value.data = []
-            return m
-
-        db.table.side_effect = table_side
-        svc = self._svc(db)
-        result = svc.get_wallet(TEST_USER_ID)
-
-        assert result.wallet.balance_cents == 0
-        assert result.recent_transactions == []
+        assert resp.status_code == 200
+        assert resp.json()["checkout_url"] == "https://checkout.lemonsqueezy.com/buy/test"
 
 
-# ── SupabaseService.credit_wallet ─────────────────────────────────────────────
+class TestLemonSqueezyWebhook:
+    def _sig(self, body: bytes) -> str:
+        from core.config import settings
+        return hmac.new(
+            settings.lemonsqueezy_webhook_secret.encode(), body, hashlib.sha256
+        ).hexdigest()
 
-class TestSupabaseServiceCreditWallet:
-    def test_calls_rpc_credit_wallet(self):
-        db = MagicMock()
-        db.rpc.return_value.execute.return_value.data = [
-            _make_txn_row(TEST_WALLET_ID, "TOPUP", 5000)
-        ]
-        svc = SupabaseService(client=db)
-        txn = svc.credit_wallet(TEST_USER_ID, 5000, "ls_order_abc")
+    def test_invalid_signature(self, client):
+        body = json.dumps({"meta": {"event_name": "order_created"}}).encode()
+        resp = client.post(
+            "/webhooks/lemonsqueezy",
+            content=body,
+            headers={"X-Signature": "badsig", "Content-Type": "application/json"},
+        )
+        assert resp.status_code == 401
 
-        db.rpc.assert_called_once_with(
-            "credit_wallet",
-            {
-                "p_user_id": str(TEST_USER_ID),
-                "p_amount_cents": 5000,
-                "p_reference_id": "ls_order_abc",
+    def test_order_created_updates_balance(self, client, mock_supabase):
+        payload = {
+            "meta": {
+                "event_name": "order_created",
+                "custom_data": {"user_id": "user-uuid"},
             },
+            "data": {"attributes": {"total": 2500}},
+        }
+        body = json.dumps(payload).encode()
+        sig = self._sig(body)
+
+        mock_supabase.table.return_value.select.return_value.eq.return_value.execute.return_value.data = [
+            {"balance": "10.00"}
+        ]
+        mock_supabase.table.return_value.update.return_value.eq.return_value.execute.return_value = MagicMock()
+
+        resp = client.post(
+            "/webhooks/lemonsqueezy",
+            content=body,
+            headers={"X-Signature": sig, "Content-Type": "application/json"},
         )
-        assert txn.amount_cents == 5000
-        assert txn.type == TransactionType.TOPUP
+        assert resp.status_code == 200
+        assert resp.json() == {"message": "ok"}
 
+        update_call = mock_supabase.table.return_value.update
+        update_call.assert_called_once_with({"balance": 35.0})
 
-# ── LemonSqueezy webhook signature verification ───────────────────────────────
+    def test_unknown_event_ignored(self, client):
+        payload = {"meta": {"event_name": "subscription_created"}}
+        body = json.dumps(payload).encode()
+        sig = self._sig(body)
+        resp = client.post(
+            "/webhooks/lemonsqueezy",
+            content=body,
+            headers={"X-Signature": sig, "Content-Type": "application/json"},
+        )
+        assert resp.status_code == 200
+        assert resp.json() == {"message": "ok"}
 
-class TestLemonSqueezyWebhookSignature:
-    SECRET = "super-secret"
-
-    def _sign(self, payload: bytes) -> str:
-        return hmac.new(self.SECRET.encode(), payload, hashlib.sha256).hexdigest()
-
-    def test_valid_signature_returns_true(self):
-        payload = b'{"meta":{"event_name":"order_created"}}'
-        sig = self._sign(payload)
-        assert _verify_lemonsqueezy_signature(payload, sig, self.SECRET) is True
-
-    def test_wrong_signature_returns_false(self):
-        payload = b'{"meta":{"event_name":"order_created"}}'
-        assert _verify_lemonsqueezy_signature(payload, "bad_sig", self.SECRET) is False
-
-    def test_tampered_payload_fails(self):
-        original = b'{"meta":{"event_name":"order_created"}}'
-        sig = self._sign(original)
-        tampered = b'{"meta":{"event_name":"order_created"},"extra":"injected"}'
-        assert _verify_lemonsqueezy_signature(tampered, sig, self.SECRET) is False
-
-    def test_empty_secret_does_not_match_non_empty(self):
-        payload = b'test'
-        sig = self._sign(payload)
-        assert _verify_lemonsqueezy_signature(payload, sig, "wrong-secret") is False
+    def test_order_created_missing_user_id(self, client):
+        payload = {
+            "meta": {"event_name": "order_created", "custom_data": {}},
+            "data": {"attributes": {"total": 1000}},
+        }
+        body = json.dumps(payload).encode()
+        sig = self._sig(body)
+        resp = client.post(
+            "/webhooks/lemonsqueezy",
+            content=body,
+            headers={"X-Signature": sig, "Content-Type": "application/json"},
+        )
+        assert resp.status_code == 400
