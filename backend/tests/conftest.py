@@ -15,7 +15,7 @@ def mock_supabase(mocker):
     mock = MagicMock()
     mocker.patch("services.supabase_service.get_supabase_admin", return_value=mock)
     mocker.patch("routers.auth.get_supabase_admin", return_value=mock)
-    mocker.patch("routers.wallet.get_supabase_admin", return_value=mock)
+    mocker.patch("routers.plan.get_supabase_admin", return_value=mock)
     mocker.patch("routers.webhooks.get_supabase_admin", return_value=mock)
     return mock
 

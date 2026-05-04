@@ -27,25 +27,13 @@ async def lemonsqueezy_webhook(request: Request):
     payload = json.loads(body)
     event_name: str = payload.get("meta", {}).get("event_name", "")
 
-    if event_name == "order_created":
+    if event_name in ("order_created", "subscription_created"):
         custom_data = payload.get("meta", {}).get("custom_data", {})
         user_id = custom_data.get("user_id")
         if not user_id:
             raise HTTPException(status_code=400, detail="Missing user_id in webhook payload")
 
-        total_cents: int = payload["data"]["attributes"]["total"]
-        amount = total_cents / 100.0
-
         supabase = get_supabase_admin()
-        wallet = (
-            supabase.table("wallets").select("balance").eq("user_id", user_id).execute()
-        )
-        if not wallet.data:
-            raise HTTPException(status_code=404, detail="Wallet not found")
-
-        new_balance = float(wallet.data[0]["balance"]) + amount
-        supabase.table("wallets").update({"balance": new_balance}).eq(
-            "user_id", user_id
-        ).execute()
+        supabase.table("profiles").update({"plan": "pro"}).eq("id", user_id).execute()
 
     return {"message": "ok"}

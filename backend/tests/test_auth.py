@@ -181,8 +181,8 @@ class TestPasskeyRegister:
         )
         assert resp.status_code == 200
         assert "token" in resp.json()
-        # Profile, wallet, and passkey all inserted after biometric confirmation
-        assert mock_supabase.table.return_value.insert.call_count == 3
+        # Profile and passkey inserted after biometric confirmation
+        assert mock_supabase.table.return_value.insert.call_count == 2
 
 
 class TestPasskeyChallenge:

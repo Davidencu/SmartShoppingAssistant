@@ -51,7 +51,7 @@ describe("PasskeyEnrollment", () => {
     expect(screen.getByText(/choose how you want to secure/i)).toBeInTheDocument();
   });
 
-  it("Face ID button: enrolls passkey, stores token, and redirects to /wallet", async () => {
+  it("Face ID button: enrolls passkey, stores token, and redirects to /plan", async () => {
     jest.mocked(webauthn.enrollPasskey).mockResolvedValue({} as never);
     jest.mocked(api.registerPasskey).mockResolvedValue({ token: "test-jwt" });
 
@@ -64,13 +64,13 @@ describe("PasskeyEnrollment", () => {
       expect(webauthn.enrollPasskey).toHaveBeenCalled();
       expect(api.registerPasskey).toHaveBeenCalledWith("test@example.com", expect.anything());
       expect(mockSetItem).toHaveBeenCalledWith("smartshop_token", "test-jwt");
-      expect(mockPush).toHaveBeenCalledWith("/wallet");
+      expect(mockPush).toHaveBeenCalledWith("/plan");
     });
 
     mockSetItem.mockRestore();
   });
 
-  it("Touch ID button: enrolls passkey, stores token, and redirects to /wallet", async () => {
+  it("Touch ID button: enrolls passkey, stores token, and redirects to /plan", async () => {
     jest.mocked(webauthn.enrollPasskey).mockResolvedValue({} as never);
     jest.mocked(api.registerPasskey).mockResolvedValue({ token: "test-jwt" });
 
@@ -83,7 +83,7 @@ describe("PasskeyEnrollment", () => {
       expect(webauthn.enrollPasskey).toHaveBeenCalled();
       expect(api.registerPasskey).toHaveBeenCalledWith("test@example.com", expect.anything());
       expect(mockSetItem).toHaveBeenCalledWith("smartshop_token", "test-jwt");
-      expect(mockPush).toHaveBeenCalledWith("/wallet");
+      expect(mockPush).toHaveBeenCalledWith("/plan");
     });
 
     mockSetItem.mockRestore();

@@ -1,24 +1,47 @@
-# SmartShop Assistant (2026 SOTA)
+# Project: SmartShop AI Agent (2026 SOTA Architecture)
 
-## 🏗 Architecture & Tech Stack
-- **Frontend (UI/UX)**: Next.js 15, TypeScript, Tailwind CSS, Lucide React (Vercel deployment)
-- **Backend (Orchestrator)**: Python 3.12+, FastAPI, Pydantic (Railway deployment)
-- **Database & Auth**: Supabase PostgreSQL, Supabase WebAuthn (Passkeys)
-- **AI Agentic Layer**: Gemini 1.5 Flash (Brain), Stagehand (Execution), Tavily (Search), Jina (Extraction)
-- **Fintech Layer**: Lithic API (Virtual Cards), LemonSqueezy (Wallet Top-Ups)
+## 1. Project Overview
+SmartShop is an autonomous AI concierge. Users search for products via a natural language chat; the AI returns the top 3 options (Generative UI), and the user selects one for autonomous checkout. We use a **Bring Your Own Card (BYOC)** model to remain a pure SaaS, avoiding all FinTech/ledger regulations.
 
-## 🛑 Hard Architectural Rules
-1. **Agentic Execution, No Legacy Scraping**: NEVER write bare-metal Playwright, Selenium, or Puppeteer DOM selectors. ALWAYS use `Stagehand` with the `page.act()` natural language syntax for web navigation.
-2. **Strict Passkey Authentication**: Do not write traditional email/password flows. All authentication and purchase approvals must route through Supabase WebAuthn (FaceID/TouchID).
-3. **Master-Ledger Integrity**: Do not update the Supabase wallet ledger on the backend unless money has physically moved (LemonSqueezy webhook) or is being frozen/refunded (Lithic API). Top-up UI failures belong strictly to the frontend.
-4. **The Saga Pattern**: If Stagehand fails a checkout, the system must immediately trigger the fallback state to void the Lithic card and unfreeze the user's funds.
+## 2. Core Tech Stack
+*   **Frontend:** Next.js (App Router, TailwindCSS)
+*   **Backend:** FastAPI (Python 3.12+)
+*   **Database:** Supabase (PostgreSQL)
+*   **Automation:** Stagehand (AI-driven browser automation)
+*   **AI/LLM:** Gemini (Intent, Scoring, Logic), Tavily & Jina (Search/Scraping)
+*   **Authentication:** WebAuthn / Passkeys (Biometric)
+*   **Billing (MoR):** Lemon Squeezy (Handles global taxes/compliance)
 
-## 💻 Non-Obvious Commands
-- **Run Frontend**: `cd frontend && npm run dev`
-- **Run Backend**: `cd backend && fastapi dev main.py`
-- **Update Database**: `supabase db push` (Run from project root)
+## 3. Strict Architectural Rules
+*   **The "No PCI-DSS" Rule:** Card numbers are NEVER stored in the DB. They move from Next.js -> FastAPI RAM -> Stagehand -> Purge. Use HTML5 `autocomplete` to trigger OS-level biometric (Face ID/Touch ID) autofill for the user.
+*   **The "Concierge" Rule:** Shipping address, phone, and name ARE stored in Supabase. This allows Stagehand to act as a concierge, filling the "boring" forms automatically while the user only provides the card.
+*   **The "Agentic" Rule:** No brittle Playwright locators. Use `page.act()` for all e-commerce interactions.
+*   **The "Zero Ledger" Rule:** No internal wallets or top-ups. We do not hold user funds. We only charge for the SaaS subscription ($9.99/mo).
 
-## 🧠 Code Style & Conventions
-- **Python**: Use strict typing with Pydantic for all FastAPI endpoints.
-- **Next.js**: Default to React Server Components unless `use client` is explicitly required for biometric triggers or LemonSqueezy UI components.
-- **Error Handling**: Fail gracefully. If an API times out, return a human-readable recovery prompt to the Next.js frontend rather than a raw server crash log.
+## 4. Database Schema (Supabase)
+*   **`Users` Table:**
+    *   `id` (UUID, PK)
+    *   `email` (Unique String)
+    *   `full_name`, `phone`, `shipping_address` (PII for Concierge auto-fill)
+    *   `tier` ('free' or 'pro')
+    *   `monthly_credits` (Integer, defaults to 2 for free users)
+    *   `lemon_squeezy_id` (String)
+*   **`Passkeys` Table:**
+    *   `credential_id`, `public_key`, `user_id` (FK to Users)
+*   **`Chat_History` Table:**
+    *   `user_id` (FK), `prompt`, `response_json` (Stores the Top 3 products found)
+
+## 5. The State-Machine Flow
+1.  **Registration:** User signs up via Passkey and provides shipping details (Stored).
+2.  **Search (Free):** User prompts for a product. Gemini uses Tavily/Jina to find 3 options.
+3.  **Generative UI:** Next.js renders 3 interactive product cards.
+4.  **Selection:** 
+    *   If **Pro/Credits > 0**: User clicks "Buy" -> Triggers Ephemeral Card Form.
+    *   If **Free/Credits == 0**: User sees "Unlock Auto-Checkout" or an Affiliate Link.
+5.  **Ephemeral Intake:** User taps card input; OS triggers **Face ID**; form autofills. Card details sent to FastAPI.
+6.  **Execution (Stagehand):** 
+    *   FastAPI fetches address from DB + Card from RAM.
+    *   Stagehand navigates, adds to cart, fills address, inputs card, clicks pay.
+7.  **Pivot/Teardown:**
+    *   If **Sold Out**: AI suggests the 2nd best item (State Pivot).
+    *   If **Success/Fail**: FastAPI **violently deletes card from RAM** and reports to UI.

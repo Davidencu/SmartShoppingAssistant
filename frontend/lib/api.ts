@@ -89,14 +89,18 @@ export function verifyMagicLink(accessToken: string) {
   });
 }
 
-export function getBalance(token: string) {
-  return request<{ balance: number; currency: string }>("/wallet/balance", {}, token);
+export function getPlanStatus(token: string) {
+  return request<{ plan: string; checkout_credits: number }>("/plan/status", {}, token);
 }
 
-export function createCheckout(amount: number, token: string) {
-  return request<{ checkout_url: string }>(
-    "/wallet/checkout",
-    { method: "POST", body: JSON.stringify({ amount }) },
+export function selectFreePlan(token: string) {
+  return request<{ plan: string; checkout_credits: number }>(
+    "/plan/select",
+    { method: "POST", body: JSON.stringify({ plan: "free" }) },
     token
   );
+}
+
+export function createProCheckout(token: string) {
+  return request<{ checkout_url: string }>("/plan/checkout", { method: "POST" }, token);
 }

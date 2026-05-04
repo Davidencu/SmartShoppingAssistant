@@ -2,7 +2,6 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { getBalance } from "@/lib/api";
 import { Loader2 } from "lucide-react";
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
@@ -15,18 +14,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       router.replace("/login");
       return;
     }
-    getBalance(token)
-      .then((wallet) => {
-        if (wallet.balance <= 0) {
-          router.replace("/wallet");
-        } else {
-          setReady(true);
-        }
-      })
-      .catch(() => {
-        localStorage.removeItem("smartshop_token");
-        router.replace("/login");
-      });
+    setReady(true);
   }, [router]);
 
   if (!ready) {
@@ -43,10 +31,10 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         <span className="font-bold text-indigo-700 text-lg">SmartShop</span>
         <div className="flex items-center gap-4">
           <button
-            onClick={() => router.push("/wallet")}
+            onClick={() => router.push("/plan")}
             className="text-sm text-indigo-600 hover:underline"
           >
-            Wallet
+            Plan
           </button>
           <button
             onClick={() => {

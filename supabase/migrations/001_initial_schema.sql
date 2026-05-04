@@ -22,16 +22,6 @@ CREATE TABLE IF NOT EXISTS public.passkeys (
     created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- wallets: one per user, balance in USD cents stored as numeric
-CREATE TABLE IF NOT EXISTS public.wallets (
-    id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id    UUID UNIQUE NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
-    balance    NUMERIC(12, 2) NOT NULL DEFAULT 0.00,
-    currency   TEXT NOT NULL DEFAULT 'USD',
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
 -- RLS: all writes go through the backend service role key only
 ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.passkeys ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.wallets  ENABLE ROW LEVEL SECURITY;

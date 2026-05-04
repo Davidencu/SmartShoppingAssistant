@@ -147,10 +147,6 @@ async def verify_otp(req: OTPVerifyRequest):
             "country": reg["country"],
         }
     ).execute()
-    supabase.table("wallets").insert(
-        {"user_id": user_id, "balance": 0.00, "currency": "USD"}
-    ).execute()
-
     options = generate_registration_options(
         rp_id=settings.rp_id,
         rp_name=settings.rp_name,
@@ -203,9 +199,6 @@ async def passkey_register(req: PasskeyRegisterRequest):
             "postal_code": reg["postal_code"],
             "country": reg["country"],
         }
-    ).execute()
-    supabase.table("wallets").insert(
-        {"user_id": user_id, "balance": 0.00, "currency": "USD"}
     ).execute()
     supabase.table("passkeys").insert(
         {
@@ -317,7 +310,6 @@ async def verify_magic(req: MagicLinkVerifyRequest):
             detail="Registration session expired. Please register again.",
         )
 
-    # Stash the Supabase user_id so passkey/register can create profile + wallet
     reg["user_id"] = user_id
 
     options = generate_registration_options(
