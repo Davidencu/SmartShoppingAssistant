@@ -52,7 +52,7 @@ export default function PasskeyEnrollment() {
   return (
     <div className="text-center space-y-6">
       <h2 className="text-xl font-semibold">Set up your passkey</h2>
-      <p className="text-sm text-gray-500">
+      <p className="text-sm text-gray-500 dark:text-gray-400">
         Choose how you want to secure your account. Your biometric data never
         leaves your device.
       </p>

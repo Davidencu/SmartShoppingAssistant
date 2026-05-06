@@ -75,7 +75,7 @@ export default function LoginForm() {
       {step === "email" ? (
         <form onSubmit={handleEmailSubmit} className="space-y-4">
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
               Email address
             </label>
             <input
@@ -86,8 +86,8 @@ export default function LoginForm() {
                 if (emailError) setEmailError(validateEmail(e.target.value));
               }}
               placeholder="you@example.com"
-              className={`w-full border rounded-lg px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-400 ${
-                emailError ? "border-red-400" : "border-gray-300"
+              className={`w-full border rounded-lg px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-400 dark:bg-gray-700 dark:text-white dark:placeholder-gray-400 ${
+                emailError ? "border-red-400" : "border-gray-300 dark:border-gray-600"
               }`}
             />
             {emailError && (
@@ -106,7 +106,7 @@ export default function LoginForm() {
             Continue
           </button>
 
-          <p className="text-center text-sm text-gray-500">
+          <p className="text-center text-sm text-gray-500 dark:text-gray-400">
             No account?{" "}
             <button
               type="button"
@@ -120,10 +120,10 @@ export default function LoginForm() {
       ) : (
         <div className="text-center space-y-6">
           <Fingerprint className="mx-auto w-20 h-20 text-indigo-500" />
-          <p className="text-gray-700 font-medium">
+          <p className="text-gray-700 dark:text-gray-200 font-medium">
             Authenticating with Face ID / Touch ID
           </p>
-          <p className="text-sm text-gray-500">{email}</p>
+          <p className="text-sm text-gray-500 dark:text-gray-400">{email}</p>
 
           {error && <p className="text-red-500 text-sm">{error}</p>}
 

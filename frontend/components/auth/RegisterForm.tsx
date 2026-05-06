@@ -131,14 +131,14 @@ export default function RegisterForm() {
   };
 
   const inputClass = (hasError: boolean) =>
-    `w-full border rounded-lg px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-indigo-400 ${
-      hasError ? "border-red-400" : "border-gray-300"
+    `w-full border rounded-lg px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-indigo-400 dark:bg-gray-700 dark:text-white dark:placeholder-gray-400 ${
+      hasError ? "border-red-400" : "border-gray-300 dark:border-gray-600"
     }`;
 
   return (
     <div>
       <h2 className="text-xl font-semibold mb-2 text-center">Create your account</h2>
-      <p className="text-sm text-gray-500 mb-6 text-center">
+      <p className="text-sm text-gray-500 dark:text-gray-400 mb-6 text-center">
         Already have one?{" "}
         <button
           type="button"
@@ -152,7 +152,7 @@ export default function RegisterForm() {
       <form onSubmit={handleSubmit} className="space-y-4">
         {/* Email */}
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
             Email address
           </label>
           <input
@@ -169,14 +169,14 @@ export default function RegisterForm() {
 
         {/* Phone */}
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
             Phone number
           </label>
           <div className="flex gap-2">
             <select
               value={form.countryCode}
               onChange={setField("countryCode")}
-              className="border border-gray-300 rounded-lg px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-indigo-400 text-sm"
+              className="border border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white rounded-lg px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-indigo-400 text-sm"
             >
               {COUNTRY_CODES.map((c) => (
                 <option key={c.code} value={c.code}>
@@ -189,8 +189,8 @@ export default function RegisterForm() {
               value={form.phone}
               onChange={setField("phone")}
               placeholder="712345678"
-              className={`flex-1 border rounded-lg px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-indigo-400 ${
-                errors.phone ? "border-red-400" : "border-gray-300"
+              className={`flex-1 border rounded-lg px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-indigo-400 dark:bg-gray-700 dark:text-white dark:placeholder-gray-400 ${
+                errors.phone ? "border-red-400" : "border-gray-300 dark:border-gray-600"
               }`}
             />
           </div>
@@ -201,7 +201,7 @@ export default function RegisterForm() {
 
         {/* Street address */}
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
             Street address
           </label>
           <input
@@ -218,7 +218,7 @@ export default function RegisterForm() {
 
         {/* City */}
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">City</label>
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">City</label>
           <input
             type="text"
             value={form.city}
@@ -233,7 +233,7 @@ export default function RegisterForm() {
 
         {/* State (optional) */}
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
             State / County{" "}
             <span className="text-gray-400 font-normal">(optional)</span>
           </label>
@@ -242,13 +242,13 @@ export default function RegisterForm() {
             value={form.state}
             onChange={setField("state")}
             placeholder="e.g. California"
-            className="w-full border border-gray-300 rounded-lg px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-indigo-400"
+            className="w-full border border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white dark:placeholder-gray-400 rounded-lg px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-indigo-400"
           />
         </div>
 
         {/* Postal code */}
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
             Postal code
           </label>
           <input
@@ -265,7 +265,7 @@ export default function RegisterForm() {
 
         {/* Country */}
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Country</label>
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Country</label>
           <input
             type="text"
             value={form.country}
@@ -279,7 +279,7 @@ export default function RegisterForm() {
         </div>
 
         {alreadyRegistered && (
-          <p className="text-sm text-center text-amber-700">
+          <p className="text-sm text-center text-amber-700 dark:text-amber-400">
             This email is already registered.{" "}
             <button
               type="button"

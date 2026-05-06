@@ -42,6 +42,17 @@ describe("PlanSelection", () => {
     expect(screen.getByRole("button", { name: /upgrade to pro/i })).toBeInTheDocument();
   });
 
+  it("renders Free price for the free tier", () => {
+    render(<PlanSelection />);
+    const items = screen.getAllByText("Free");
+    expect(items.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("renders 44.99 RON price for the pro tier", () => {
+    render(<PlanSelection />);
+    expect(screen.getByText("44.99 RON")).toBeInTheDocument();
+  });
+
   it("renders 2 automated checkouts in free plan description", () => {
     render(<PlanSelection />);
     expect(screen.getByText(/2 automated checkout sessions/i)).toBeInTheDocument();
