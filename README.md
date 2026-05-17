@@ -13,14 +13,15 @@ SmartShop is a full-stack AI-powered shopping assistant. Users describe what the
 5. [AI Scoring System](#ai-scoring-system)
 6. [Semantic Cache](#semantic-cache)
 7. [Structured Data Extraction (JSON-LD)](#structured-data-extraction-json-ld)
-8. [Plan & Billing](#plan--billing)
-9. [Frontend](#frontend)
-10. [Database Schema](#database-schema)
-11. [Project Structure](#project-structure)
-12. [Local Setup](#local-setup)
-13. [Environment Variables](#environment-variables)
-14. [Running Tests](#running-tests)
-15. [Architectural Rules](#architectural-rules)
+8. [Network Performance Under Load](#network-performance-under-load)
+9. [Plan & Billing](#plan--billing)
+10. [Frontend](#frontend)
+11. [Database Schema](#database-schema)
+12. [Project Structure](#project-structure)
+13. [Local Setup](#local-setup)
+14. [Environment Variables](#environment-variables)
+15. [Running Tests](#running-tests)
+16. [Architectural Rules](#architectural-rules)
 
 ---
 
@@ -330,6 +331,134 @@ Gemini is instructed to use these values directly for budget checks and scoring 
 
 ---
 
+## Network Performance Under Load
+
+When many users concurrently search for popular products (gaming laptops, phones), the naive approach — fetching and parsing every URL fresh for every request — wastes CPU, memory, and risks IP bans from e-commerce sites. Three complementary data structures in `scraper_service.py` and `jsonld_service.py` address this.
+
+### 1. Bloom Filter — RAM-efficient URL deduplication
+
+A Bloom filter is a probabilistic bit-array that answers "have we scraped this URL before?" using a fraction of the RAM a regular Python `set` would need.
+
+```
+BloomFilter(capacity=100_000, error_rate=0.01)
+
+Memory:   ~120 KB  (bytearray of ~960 k bits)
+vs. set:  ~5–10 MB for 100k URL strings
+
+False negatives: impossible — if a URL was added, it is always found.
+False positives: ~1% at capacity — at most 1 in 100 unseen URLs is
+                 mistakenly treated as already scraped. Harmless: the
+                 LRU cache miss that follows sends it to the queue anyway.
+```
+
+**How it works — Kirsch-Mitzenmacher double-hashing:**
+
+Two cheap digests (MD5 + SHA-1) are computed once per URL. All `k` hash positions are derived from them via `(h1 + i·h2) % m`, avoiding `k` separate hash calls regardless of how many hash functions are configured.
+
+```python
+def _positions(self, item: str) -> list[int]:
+    h1 = int.from_bytes(md5(item.encode()).digest(), "little")
+    h2 = int.from_bytes(sha1(item.encode()).digest(), "little")
+    return [(h1 + i * h2) % self._size for i in range(self._hash_count)]
+```
+
+Optimal parameters are computed from `capacity` and `error_rate` at construction time using the standard Bloom filter formulae:
+
+```
+m (bit-array size) = ⌈-n · ln(p) / (ln 2)²⌉
+k (hash functions) = ⌈(m/n) · ln 2⌉
+```
+
+### 2. Two-Level Scrape Cache — Bloom + LRU
+
+The Bloom filter alone only says "probably scraped". The `_LRUCache` (backed by `collections.OrderedDict`) holds the actual scrape results for recently seen pages so repeated requests return immediately without any network I/O.
+
+```
+Request arrives for URL
+        │
+        ▼
+  URL in BloomFilter?  ──No──► enqueue in priority queue (full scrape)
+        │ Yes
+        ▼
+  URL in _LRUCache?    ──No──► enqueue (Bloom false-positive, rare)
+        │ Yes
+        ▼
+  Return cached result instantly  (0 network calls, 0 CPU)
+```
+
+`_LRUCache` uses `OrderedDict` with `move_to_end` on every access (O(1)) and `popitem(last=False)` to evict the least-recently-used entry when at capacity (2 000 pages, ~20–100 KB each → at most ~200 MB upper bound).
+
+```python
+def get(self, key: str) -> Optional[dict]:
+    if key not in self._store:
+        return None
+    self._store.move_to_end(key)       # mark as recently used
+    return self._store[key]
+
+def put(self, key: str, value: dict) -> None:
+    if key in self._store:
+        self._store.move_to_end(key)
+        self._store[key] = value       # update value in-place
+    else:
+        if len(self._store) >= self._maxsize:
+            self._store.popitem(last=False)   # evict LRU entry
+        self._store[key] = value
+```
+
+### 3. `@lru_cache` on JSON-LD Parsing — CPU deduplication
+
+Parsing raw HTML with regex + `json.loads` is CPU-intensive. When 50 users simultaneously search for the same iPhone model, they will all receive the same HTML from the product page. Without caching, `extract_jsonld_facts` runs 50 times for identical input.
+
+`@functools.lru_cache(maxsize=256)` turns repeated calls with the same HTML string into O(1) dict lookups:
+
+```python
+@functools.lru_cache(maxsize=_JSONLD_CACHE_SIZE)   # 256 unique HTML pages
+def extract_jsonld_facts(text: str) -> dict:
+    ...
+```
+
+At 256 entries × ~50 KB average HTML ≈ 13 MB upper bound on retained strings.
+
+> **Immutability contract**: the cached dict must not be mutated by callers. Downstream code that needs to modify extracted facts must copy the dict first.
+
+### 4. Priority Queue Scraper Scheduler — anti-ban without sacrificing speed
+
+Instead of applying a fixed sleep between all scrapes (which slows down real users) or randomised jitter (which gives no ordering guarantees), a min-heap priority queue assigns each scrape task a weight:
+
+| Priority | Value | Delay after scrape | Use case |
+|---|---|---|---|
+| P1 — User request | 1 | **0 s** | Live search — immediate |
+| P2 — Retry | 2 | 0.5 s | Failed URL being retried |
+| P3 — Prefetch | 3 | 1.0 s | Speculative cache warm-up |
+| P4 — Cache refresh | 4 | 2.0 s | Refreshing near-expiry results |
+| P5 — Background | 5 | **3.0 s** | Background stock-data refresh |
+
+Items are stored as `(priority, seq, url, future)` tuples. The monotonic `seq` counter acts as a tiebreaker within the same priority level, ensuring FIFO ordering and preventing Python from ever needing to compare `asyncio.Future` objects (which are not orderable and would raise `TypeError`).
+
+```
+asyncio.PriorityQueue (min-heap)
+
+  (P1, 1, "user-url-A", future_A)   ← dequeued first
+  (P1, 2, "user-url-B", future_B)   ← dequeued second
+  (P5, 3, "background-url", future) ← dequeued last, 3 s delay after
+```
+
+Five async workers drain the queue concurrently. A P5 worker sleeping for 3 s does not block P1 items — the other four workers remain available. Workers start lazily on the first `submit()` call so no background tasks run while the server is idle.
+
+```
+                    ┌──────────────────────────────────┐
+  submit(url, P1) ──►                                  │
+  submit(url, P5) ──►   asyncio.PriorityQueue          ├──► worker 1 (P1, instant)
+  submit(url, P1) ──►                                  ├──► worker 2 (P1, instant)
+                    │   items ordered by (priority,seq)├──► worker 3 (idle)
+                    │                                  ├──► worker 4 (idle)
+                    └──────────────────────────────────┘──► worker 5 (P5, 3s delay)
+```
+
+**Net effect:** real users never wait for background tasks; e-commerce servers are not hammered by low-priority scrapes; no IP ban risk from burst behaviour.
+
+---
+
 ## Plan & Billing
 
 | | Free | Pro |
@@ -465,7 +594,9 @@ SmartShoppingAssistant/
 │       ├── mock/
 │       │   ├── test_search_mock.py        # 22 endpoint tests (all calls mocked)
 │       │   ├── test_real_user_scenarios.py # 28 user scenario tests
-│       │   └── test_jsonld_service.py     # 20 JSON-LD / microdata unit tests
+│       │   ├── test_jsonld_service.py     # 20 JSON-LD / microdata unit tests
+│       │   └── test_data_structures.py   # 23 unit tests: BloomFilter, _LRUCache,
+│       │                                 #   Priority, ScraperScheduler, @lru_cache
 │       └── live/
 │           └── test_search_live.py        # 28 tests hitting real APIs
 │
@@ -560,10 +691,10 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=...
 ```bash
 cd backend
 python -m pytest tests/mock/ -v
-# 70 tests
+# 93 tests
 ```
 
-Covers: endpoint logic, JSON-LD extraction edge cases, real user conversation scenarios, semantic cache bypass, excluded URL stripping, global fallback, no-results clarification.
+Covers: endpoint logic, JSON-LD extraction edge cases, real user conversation scenarios, semantic cache bypass, excluded URL stripping, global fallback, no-results clarification, BloomFilter correctness and false-positive rate, `_LRUCache` eviction ordering, Priority min-heap ordering, `ScraperScheduler` future resolution, and `@lru_cache` hit/miss tracking on `extract_jsonld_facts`.
 
 ### Live tests (consumes real API credits)
 

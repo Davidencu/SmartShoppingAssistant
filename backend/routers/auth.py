@@ -1,5 +1,6 @@
 import base64
 import json
+import logging
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -32,6 +33,7 @@ from models.user import (
 )
 from services.supabase_service import get_supabase_admin
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/auth", tags=["auth"])
 _bearer = HTTPBearer()
 
@@ -105,7 +107,7 @@ async def send_otp(req: OTPRequest):
                 "Content-Type": "application/json",
             },
         )
-    print(resp.status_code, resp.text)
+    logger.debug("[OTP] send response: %d", resp.status_code)
     if resp.status_code not in (200, 204):
         raise HTTPException(status_code=500, detail="Failed to send confirmation email")
 

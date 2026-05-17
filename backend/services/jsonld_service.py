@@ -1,7 +1,7 @@
 """
 JSON-LD structured-data extraction for product value scoring.
 
-Called after Jina scraping; injects machine-verified price / availability / rating
+Called after scraping; injects machine-verified price / availability / rating
 at the top of each product block in the Gemini scoring prompt so the model does not
 have to guess from prose text.
 
@@ -12,11 +12,18 @@ Edge cases handled:
   - offers is nested dict : product.offers.price / product.offers.priceCurrency
   - price is a string     : "1 799,00" → 1799.0
 """
+import functools
 import json
 import logging
 import re
 
 logger = logging.getLogger(__name__)
+
+# How many unique HTML pages to keep parsed results for.
+# Popular products (gaming laptops, phones) are requested by many concurrent users;
+# the cache turns O(n·parse) into O(1·parse + (n-1)·lookup) for identical pages.
+# At 256 entries × ~50 KB avg HTML ≈ 13 MB upper bound on additional retained strings.
+_JSONLD_CACHE_SIZE = 256
 
 
 def _extract_microdata_rating(html: str) -> dict:
@@ -66,10 +73,16 @@ def _extract_microdata_rating(html: str) -> dict:
     return facts
 
 
+@functools.lru_cache(maxsize=_JSONLD_CACHE_SIZE)
 def extract_jsonld_facts(text: str) -> dict:
     """
-    Search for Schema.org Product JSON-LD in any text (Jina Markdown or raw HTML).
+    Search for Schema.org Product JSON-LD in any text (raw HTML or Markdown).
     Returns a dict with confirmed facts, or {} if nothing found.
+
+    Results are LRU-cached by the full text string.  When many users request
+    the same popular product (e.g. a gaming laptop), the regex + JSON parsing
+    runs once and every subsequent caller gets the cached dict in O(1).
+    Callers must NOT mutate the returned dict (it is the live cache value).
     """
     raw_blocks: list[str] = []
 
