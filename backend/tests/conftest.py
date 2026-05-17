@@ -13,10 +13,28 @@ def client():
 @pytest.fixture
 def mock_supabase(mocker):
     mock = MagicMock()
+
+    # The search endpoint fetches city/country from the user's profile.
+    # Configure the .table().select().eq().single().execute() chain so tests
+    # receive a real dict instead of a truthy MagicMock.
+    # .single() is only called for the profile lookup, so this won't collide
+    # with other table access patterns (insert, order/limit, etc.).
+    _profile_resp = MagicMock()
+    _profile_resp.data = {"city": "", "country": ""}
+    (
+        mock.table.return_value
+        .select.return_value
+        .eq.return_value
+        .single.return_value
+        .execute.return_value
+    ) = _profile_resp
+
     mocker.patch("services.supabase_service.get_supabase_admin", return_value=mock)
     mocker.patch("routers.auth.get_supabase_admin", return_value=mock)
     mocker.patch("routers.plan.get_supabase_admin", return_value=mock)
     mocker.patch("routers.webhooks.get_supabase_admin", return_value=mock)
+    mocker.patch("routers.search.get_supabase_admin", return_value=mock)
+    mocker.patch("services.cache_service.get_supabase_admin", return_value=mock)
     return mock
 
 

@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from routers import auth, plan, webhooks
+from routers import auth, plan, search, webhooks
 
 app = FastAPI(title="SmartShop Assistant API")
 
@@ -15,6 +15,7 @@ app.add_middleware(
 
 app.include_router(auth.router)
 app.include_router(plan.router)
+app.include_router(search.router)
 app.include_router(webhooks.router)
 
 

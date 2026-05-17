@@ -25,6 +25,13 @@ jest.mock("next-themes", () => ({
 
 jest.mock("@/lib/api", () => ({
   getPlanStatus: jest.fn().mockResolvedValue({ plan: "free", checkout_credits: 2 }),
+  ApiError: class ApiError extends Error {
+    status: number;
+    constructor(message: string, status: number) {
+      super(message);
+      this.status = status;
+    }
+  },
 }));
 
 describe("DashboardLayout auth guard", () => {

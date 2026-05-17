@@ -11,7 +11,6 @@ class Settings(BaseSettings):
     lithic_api_key: str
     lithic_webhook_secret: str
     tavily_api_key: str
-    jina_api_key: str
     gemini_api_key: str
     browserbase_api_key: str
     browserbase_project_id: str
