@@ -1,16 +1,17 @@
 import base64
 import json
 import logging
+import re
 import time
 from typing import Optional
 
 from google import genai
 from google.genai import types
 from google.genai import errors
+from pydantic import BaseModel
 
 from core.config import settings
 from services.jsonld_service import build_facts_header
-from services.logistics_data import get_logistics_context
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +38,141 @@ def _with_backoff(fn, *args, **kwargs):
             )
             time.sleep(delay)
             delay *= 2
+
+# ─── Dynamic logistics helpers ────────────────────────────────────────────────
+
+class LogisticsData(BaseModel):
+    ships_to_user: bool
+    shipping_cost_ron: Optional[float] = None
+    estimated_days: Optional[str] = None
+    free_shipping_threshold_ron: Optional[float] = None
+
+
+# Per-domain cache: avoids re-fetching and re-extracting for the same store
+_logistics_cache: dict[str, LogisticsData | None] = {}
+
+
+def _extract_domain_simple(url: str) -> str:
+    m = re.search(r"(?:https?://)?(?:www\.)?([^/]+)", url)
+    return m.group(1).lower() if m else "unknown"
+
+
+def extract_dynamic_logistics(
+    policy_url: str, user_country: str, user_city: str
+) -> LogisticsData | None:
+    """
+    Logistics micro-agent: fetch a store's shipping policy page, then use
+    Gemini Flash with response_schema to extract a strict LogisticsData object.
+    Results are cached per domain. Runs synchronously (safe in threadpool).
+    Returns None on failure so the caller falls back to the rubric.
+    """
+    if not policy_url:
+        return None
+
+    domain = _extract_domain_simple(policy_url)
+    if domain in _logistics_cache:
+        return _logistics_cache[domain]
+
+    # Fetch the policy page — we are already running in a threadpool
+    from curl_cffi.requests import Session as _S
+    import trafilatura as _t
+
+    policy_text: str | None = None
+    try:
+        with _S(impersonate="chrome124") as session:
+            resp = session.get(policy_url, timeout=10)
+            if resp.status_code == 200:
+                policy_text = _t.extract(resp.text, include_comments=False) or None
+    except Exception as exc:
+        logger.warning("[LOGISTICS] policy fetch failed for %s: %s", policy_url, exc)
+
+    if not policy_text:
+        _logistics_cache[domain] = None
+        return None
+
+    location = ", ".join(filter(None, [user_city, user_country])) or "unknown"
+    prompt = (
+        f"Read the following shipping policy and extract the logistics data for a user in {location}.\n"
+        f"Convert non-RON prices to RON (1 EUR ≈ 5 RON, 1 USD ≈ 4.6 RON, 1 GBP ≈ 5.9 RON).\n"
+        f"If the vendor does not ship to this location, set ships_to_user to false.\n\n"
+        f"POLICY TEXT:\n{policy_text[:4000]}"
+    )
+    try:
+        response = _with_backoff(
+            _client.models.generate_content,
+            model=_FLASH,
+            contents=[types.Content(role="user", parts=[types.Part(text=prompt)])],
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=LogisticsData,
+                temperature=0.0,
+                max_output_tokens=256,
+                thinking_config=types.ThinkingConfig(thinking_budget=0),
+            ),
+        )
+        result = LogisticsData.model_validate_json(response.text)
+        _logistics_cache[domain] = result
+        logger.info(
+            "[LOGISTICS] %s → ships=%s cost=%s days=%s",
+            domain, result.ships_to_user, result.shipping_cost_ron, result.estimated_days,
+        )
+        return result
+    except Exception as exc:
+        logger.warning("[LOGISTICS] extraction failed for %s: %s", domain, exc)
+        _logistics_cache[domain] = None
+        return None
+
+
+def clear_logistics_cache() -> dict:
+    count = len(_logistics_cache)
+    _logistics_cache.clear()
+    return {"logistics_cache_entries_cleared": count}
+
+
+def _score_band_from_logistics(data: LogisticsData) -> tuple[str, str]:
+    if not data.ships_to_user:
+        return "0–20", "does not ship to this location"
+    m = re.search(r"(\d+)", data.estimated_days or "")
+    days_min = int(m.group(1)) if m else None
+    cost = data.shipping_cost_ron
+    threshold = data.free_shipping_threshold_ron
+    is_free = cost == 0.0
+    has_threshold = threshold is not None
+    if is_free and days_min is not None and days_min <= 2:
+        return "90–100", "free shipping + express delivery"
+    if is_free and days_min is not None and days_min <= 5:
+        return "80–90", "free shipping + standard delivery"
+    if is_free:
+        return "75–85", "free shipping to destination"
+    if has_threshold:
+        return "65–75", "free above threshold; paid otherwise"
+    if cost is not None and days_min is not None and days_min <= 3:
+        return "65–75", f"paid shipping ({cost:.0f} RON), fast delivery"
+    if cost is not None and days_min is not None and days_min <= 7:
+        return "55–65", f"paid shipping ({cost:.0f} RON), moderate delivery"
+    if cost is not None:
+        return "45–60", f"paid shipping ({cost:.0f} RON), delivery window unspecified"
+    return "55–70", "shipping data partially confirmed"
+
+
+def _format_dynamic_logistics_ctx(
+    domain: str, city: str, country: str, data: LogisticsData
+) -> str:
+    location = ", ".join(filter(None, [city, country])) or "destination"
+    score_band, reason = _score_band_from_logistics(data)
+    cost = f"{data.shipping_cost_ron:.0f} RON" if data.shipping_cost_ron is not None else "Not specified"
+    days = data.estimated_days or "Not specified"
+    threshold = f"{data.free_shipping_threshold_ron:.0f} RON" if data.free_shipping_threshold_ron is not None else "None"
+    return (
+        f"### VENDOR LOGISTICS CONTEXT ({domain} → {location})\n"
+        f"• Ships to your location: {'Yes' if data.ships_to_user else 'No'}\n"
+        f"• Shipping cost: {cost}\n"
+        f"• Estimated delivery: {days}\n"
+        f"• Free shipping threshold: {threshold}\n"
+        f"→ LOGISTICS SCORE GUIDANCE: {score_band} ({reason})\n"
+        f"   Use this guidance as your primary logistics score source.\n\n"
+    )
+
 
 # ─── Shopping System Prompt ────────────────────────────────────────────────────
 # Injected into every Gemini call. Defines ShopperAI's identity, intent system,
@@ -359,19 +495,27 @@ def score_and_rank_products(
         md = (r.get("markdown") or "")[:3000]
         jsonld = r.get("jsonld") or {}
         facts_header = build_facts_header(jsonld)
-        logistics_ctx = "" if is_global else get_logistics_context(
-            url=r["url"],
-            city=city,
-            price=jsonld.get("price"),
-            price_currency=jsonld.get("currency"),
-            budget_currency=budget_currency,
-        )
+
+        logistics_ctx = ""
+        return_note = ""
+        if not is_global:
+            policy_url = r.get("shipping_policy_url") or ""
+            if policy_url:
+                logistics = extract_dynamic_logistics(policy_url, country, city)
+                if logistics:
+                    logistics_ctx = _format_dynamic_logistics_ctx(
+                        _extract_domain_simple(r["url"]), city, country, logistics
+                    )
+            return_text = (r.get("return_policy_text") or "")[:600]
+            if return_text:
+                return_note = f"### RETURN POLICY\n{return_text}\n\n"
+
         products_block += (
             f"\n\n---\n"
             f"## PRODUCT {i}\n"
             f"Title: {r.get('title', 'Unknown')}\n"
             f"URL: {r['url']}\n\n"
-            f"{facts_header}{logistics_ctx}{md}"
+            f"{facts_header}{logistics_ctx}{return_note}{md}"
         )
 
     budget_str = f"{budget_max} {budget_currency}" if budget_max else "not specified"
@@ -541,10 +685,14 @@ FINDING QUALITY SIGNALS — scan the ENTIRE product text for any of these patter
 {logistics_rubric}
 
 TRUST & RISK MITIGATION (10% weight)
-  100 — Sold & shipped by official brand or major authorised retailer
-   70 — Well-rated 3rd-party seller (≥95% positive feedback, many transactions)
-   40 — Unknown 3rd-party seller with limited history
-    0 — Suspicious listing, no seller info, or high-risk indicators
+If a RETURN POLICY section appears above the product text, use it to adjust this score.
+A generous return window (30+ days, free returns) is a strong positive signal; "all sales final"
+or no return info is a negative signal.
+  100 — Official brand or major authorised retailer + generous return policy (30+ day free returns)
+   80 — Major retailer or official brand; standard return window offered
+   70 — Well-rated 3rd-party seller (≥95% positive feedback); returns accepted
+   40 — Unknown seller; no return policy info found on the page
+    0 — Suspicious listing, no seller info, "all sales final", or high-risk indicators
 
 VALUE SCORE FORMULA:
 value_score = (cost_efficiency × 0.40) + (quality_confidence × 0.35) + \

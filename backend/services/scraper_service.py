@@ -21,11 +21,14 @@ import asyncio
 import hashlib
 import logging
 import math
+import re
 from collections import OrderedDict
 from enum import IntEnum
 from typing import Optional
+from urllib.parse import urljoin
 
 import trafilatura
+from bs4 import BeautifulSoup
 from curl_cffi.requests import Session
 
 from services.jsonld_service import extract_bs4_facts, extract_jsonld_facts
@@ -148,6 +151,51 @@ _scraped_bloom = BloomFilter(capacity=100_000, error_rate=0.01)
 # URL scrape-result cache: at most 2000 pages (~20–100 KB each) in RAM
 _url_cache = _LRUCache(maxsize=2_000)
 
+# Per-domain policy cache: domain → {"shipping_url": str|None, "return_text": str|None}
+_policy_cache: dict[str, dict] = {}
+
+_SHIPPING_KEYWORDS = [
+    "shipping", "delivery", "livrare", "transport", "versand", "livraison",
+    "expedition", "envio", "frete", "spedizione", "bezorging",
+    "shipping-policy", "delivery-info", "delivery-policy",
+]
+
+_RETURN_KEYWORDS = [
+    "return", "refund", "retur", "ramburs", "retour", "rückgabe",
+    "reembolso", "reso", "terugsturen", "exchange", "cancellation",
+]
+
+
+def _extract_domain(url: str) -> str:
+    m = re.search(r"(?:https?://)?(?:www\.)?([^/]+)", url)
+    return m.group(1).lower() if m else ""
+
+
+def _find_policy_links(html: str, base_url: str) -> tuple[str | None, str | None]:
+    """
+    Scan all links checking both href and anchor text for shipping and return
+    policy pages on the same domain. Returns (shipping_url, return_url).
+    """
+    base_domain = _extract_domain(base_url)
+    soup = BeautifulSoup(html, "html.parser")
+    shipping_url: str | None = None
+    return_url: str | None = None
+
+    for a_tag in soup.find_all("a", href=True):
+        href = a_tag["href"]
+        combined = (href + " " + a_tag.get_text(strip=True)).lower()
+        full = urljoin(base_url, href)
+        if _extract_domain(full) != base_domain or full == base_url:
+            continue
+        if shipping_url is None and any(kw in combined for kw in _SHIPPING_KEYWORDS):
+            shipping_url = full
+        if return_url is None and any(kw in combined for kw in _RETURN_KEYWORDS):
+            return_url = full
+        if shipping_url and return_url:
+            break
+
+    return shipping_url, return_url
+
 
 # ─── Scraper core (synchronous, runs in thread pool) ────────────────────────────
 
@@ -169,7 +217,7 @@ def _fetch_one_sync(url: str) -> dict:
         logger.warning("Fetch failed for %s: %s", url, exc)
 
     if not html:
-        return {"url": url, "markdown": "", "jsonld": {}}
+        return {"url": url, "markdown": "", "jsonld": {}, "shipping_policy_url": None, "return_policy_text": None}
 
     # Extract structured data from raw HTML before trafilatura strips tags.
     # BS4 covers Open Graph meta, itemprop, aria-labels, and data-* attributes —
@@ -177,7 +225,34 @@ def _fetch_one_sync(url: str) -> dict:
     # JSON-LD is authoritative: it wins on any key conflict with BS4.
     jsonld = {**extract_bs4_facts(html), **extract_jsonld_facts(html)}
     markdown = trafilatura.extract(html, include_tables=True, include_links=False) or ""
-    return {"url": url, "markdown": markdown, "jsonld": jsonld}
+
+    # ── Two-hop: find shipping + return policy pages once per domain ─────────
+    domain = _extract_domain(url)
+    if domain not in _policy_cache:
+        shipping_url, return_url = _find_policy_links(html, url)
+        return_text: str | None = None
+        if return_url:
+            try:
+                with Session(impersonate=_IMPERSONATE) as rs:
+                    rr = rs.get(return_url, timeout=10)
+                    if rr.status_code == 200:
+                        return_text = trafilatura.extract(rr.text, include_comments=False) or None
+            except Exception as exc:
+                logger.debug("[SCRAPER] return policy fetch failed for %s: %s", return_url, exc)
+        _policy_cache[domain] = {"shipping_url": shipping_url, "return_text": return_text}
+        if shipping_url:
+            logger.info("[SCRAPER] shipping policy URL found for %s: %s", domain, shipping_url)
+        if return_text:
+            logger.info("[SCRAPER] return policy fetched for %s (%d chars)", domain, len(return_text))
+
+    cached = _policy_cache.get(domain, {})
+    return {
+        "url": url,
+        "markdown": markdown,
+        "jsonld": jsonld,
+        "shipping_policy_url": cached.get("shipping_url"),
+        "return_policy_text": cached.get("return_text"),
+    }
 
 
 # ─── Priority-queue scrape scheduler ───────────────────────────────────────────
@@ -300,6 +375,7 @@ def clear_memory_cache() -> dict:
     evicted = len(_url_cache)
     _url_cache._store.clear()
     _scraped_bloom._bits = bytearray(_scraped_bloom._size // 8 + 1)
+    _policy_cache.clear()
     logger.info("[CACHE] in-memory cache cleared: %d LRU entries evicted", evicted)
     return {"lru_entries_evicted": evicted}
 

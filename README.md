@@ -1,6 +1,8 @@
 # SmartShop AI — Autonomous Shopping Concierge
 
-SmartShop is a full-stack AI-powered shopping assistant. Users describe what they want to buy in natural language; the system finds, scores, and ranks the three best products from live e-commerce pages. The architecture is designed as a zero-ledger, zero-PCI-DSS SaaS: the AI handles discovery, the user provides the card only at checkout, and card data never touches the database.
+**Tell SmartShop what you want to buy and your budget. It searches the web, reads the product pages, checks the shipping policies, and hands you the three best options — ranked by real value, not sponsored placement.**
+
+SmartShop is a full-stack AI shopping assistant built around a simple idea: the AI does all the tedious work (searching, comparing prices, checking shipping, reading return policies) so the user just picks their favourite. The system is designed as a zero-ledger, zero-PCI-DSS SaaS — card details are never stored anywhere and the AI handles everything up to the moment of purchase.
 
 ---
 
@@ -13,7 +15,7 @@ SmartShop is a full-stack AI-powered shopping assistant. Users describe what the
 5. [AI Scoring System](#ai-scoring-system)
 6. [Semantic Cache](#semantic-cache)
 7. [Multi-Layer Structured Data Extraction](#multi-layer-structured-data-extraction)
-8. [Vendor Logistics Registry](#vendor-logistics-registry)
+8. [Autonomous Logistics Discovery](#autonomous-logistics-discovery)
 9. [Network Performance Under Load](#network-performance-under-load)
 10. [Plan & Billing](#plan--billing)
 11. [Frontend](#frontend)
@@ -158,7 +160,7 @@ SmartShop uses a two-phase registration: email ownership is verified first (OTP)
 
 ## Search Pipeline
 
-Every `/search/chat` request passes through a five-stage pipeline. Each stage is independently failable with graceful degradation.
+Every search message passes through a five-stage pipeline. If any stage fails or finds nothing useful, the system degrades gracefully — retrying globally, explaining why nothing was found, or returning a partial result — rather than showing an error page.
 
 ```
 User message
@@ -211,22 +213,29 @@ User message
                            │
                            ▼
 ┌─────────────────────────────────────────────────────┐
-│ STAGE 4 — SCRAPING (4-layer extraction)            │
+│ STAGE 4 — SCRAPING (two-hop + 4-layer extraction)  │
 │                                                     │
-│  Up to 5 URLs scraped concurrently via the         │
-│  priority-queue scheduler.  Per URL:               │
+│  Up to 5 product URLs scraped concurrently.        │
+│  Per URL:                                          │
 │                                                     │
-│  1. curl_cffi fetches HTML with Chrome fingerprint │
-│     (bypasses basic bot-detection)                 │
+│  1. curl_cffi fetches the product page HTML        │
+│     with a Chrome fingerprint to bypass basic      │
+│     bot-detection                                  │
 │  2. extract_jsonld_facts — Schema.org JSON-LD,     │
 │     HTML microdata, data-* attributes              │
-│  3. extract_bs4_facts (BeautifulSoup4/lxml) —     │
+│  3. extract_bs4_facts (BeautifulSoup4) —           │
 │     Open Graph meta, itemprop content=,            │
-│     aria-label ratings, data-price attributes,     │
-│     og:site_name → seller context                  │
+│     aria-label ratings, data-price attributes      │
 │     JSON-LD wins on conflict (authoritative)       │
 │  4. trafilatura — main body text, strips           │
 │     nav/footer/cookie banners/ads                  │
+│                                                     │
+│  TWO-HOP (once per domain, cached):                │
+│  5. Footer sniper scans links for "shipping",      │
+│     "delivery", "livrare", "versand", etc.         │
+│     → shipping policy URL stored for micro-agent  │
+│  6. Return policy link also found and fetched      │
+│     → text injected for trust scoring             │
 │                                                     │
 │  Pages with < 200 chars of content are discarded.  │
 └──────────────────────────┬──────────────────────────┘
@@ -253,31 +262,31 @@ User message
 
 ### Global Fallback
 
-If local scoring returns zero products, the pipeline automatically retries with `is_global=True` and no domain restriction. The frontend shows a notice: *"I couldn't find this on local retailers — here are the best global options."*
+If no local retailer has the product in stock or within budget, the pipeline automatically widens the search to the entire web with no country restriction. The user sees a friendly note explaining what happened: *"I couldn't find this on local retailers — here are the best global options."* No dead ends.
 
 ### Dynamic Budget Drop
 
-When `is_refinement=true` and the user asks for "cheaper", Gemini reads the previous assistant message (which contains a price-enriched product list) and sets `budget_max = floor(cheapest_previous_price × 0.80)`. The 80% floor is computed mathematically from actual shown prices, not guessed.
+When the user says "find me something cheaper", SmartShop doesn't just search for the same thing with a vague "lower budget" instruction. It reads the prices of the products it just showed, takes the cheapest one, and sets the new ceiling at 80% of that price — computed from the actual numbers, not guessed. For example: if the three products shown cost 1799, 1950, and 1600 RON, the new budget becomes 1280 RON (80% of 1600).
 
 ---
 
 ## AI Scoring System
 
-Products are scored across four dimensions in a single Gemini call with structured JSON output.
+Every product is scored across four dimensions in one Gemini call. The scores are combined into a single **value score** (0–100) that tells you how good a deal each product actually is — not just how cheap or how expensive.
 
 | Dimension | Weight | What it measures |
 |---|---|---|
 | `cost_efficiency` | 40% | Real value for the price paid. Being well under budget is rewarded, not penalised. |
 | `quality_confidence` | 35% | Confidence in product quality: ratings, review counts, spec signals, quality badges. |
-| `logistics` | 15% | Delivery speed, in-stock status, regional availability. Scored deterministically from the Vendor Logistics Registry when the retailer is known; falls back to page-text inference for unknown vendors. |
-| `trust` | 10% | Seller reputation — official brand vs. unknown third-party. |
+| `logistics` | 15% | Shipping cost, delivery speed, and availability to the user's location. Extracted directly from the store's own shipping policy page — works for any store on Earth, not just a pre-approved list. |
+| `trust` | 10% | Seller reputation and return policy. Official brand stores with generous return windows score higher than unknown third-party sellers. |
 
 **Score anchors (0–100 per dimension):**
-- `40` = data absent from the page (unknown, not a bad signal)
-- `0` = confirmed bad signal (out of stock, price above hard limit, suspicious seller)
+- `40` = information not found on the page — treated as "unknown", not a failure
+- `0` = confirmed bad news (out of stock, price above the hard limit, suspicious seller)
 - `100` = outstanding confirmed signal (4.5+ stars, 500+ reviews, same-day delivery confirmed)
 
-**Formula recomputed in Python (Gemini's arithmetic is not trusted):**
+**The final score is computed in Python code, not by the AI** (AI arithmetic is unreliable):
 ```
 value_score = cost_efficiency×0.40 + quality_confidence×0.35 + logistics×0.15 + trust×0.10
 ```
@@ -297,27 +306,25 @@ When `is_global=True`, three prompt blocks are swapped:
 
 ## Semantic Cache
 
-Prevents redundant API calls for effectively identical searches.
+If two users search for "ASUS gaming laptop under 3000 RON" within six hours of each other, the second search skips the entire pipeline and returns the cached result in milliseconds. The cache is smart enough to recognise that "ASUS gaming laptop 3000 RON" and "ASUS gaming laptop max 3000 lei" are the same query, even though the wording differs.
 
-**Storage:** `search_cache` table in Supabase with a `pgvector(768)` column and IVFFlat index.
+**How a cache hit is decided (all four conditions must pass):**
+1. The meaning of the search query is ≥ 92% similar (measured by AI embeddings — a 768-number fingerprint of the query's meaning)
+2. Same product category
+3. Cached budget ceiling is within the new budget
+4. Result is less than 6 hours old
 
-**Cache key:** 768-dimensional Gemini embedding (`gemini-embedding-001`, `SEMANTIC_SIMILARITY` task).
-
-**Hit conditions (all must pass):**
-1. Cosine similarity ≥ 0.92
-2. Same product category (case-insensitive)
-3. Cached `budget_max` ≤ requested `budget_max` (same currency)
-4. Entry not expired (TTL: 6 hours)
-
-**Bypass conditions:**
-- `excluded_urls` non-empty — user rejected previous results
-- `is_refinement=true` — budget or preference changed
+**The cache is automatically skipped when:**
+- The user rejected the previous results (the "Not satisfied?" button was clicked)
+- The user asked for "cheaper" or changed their preferences — same query but different intent
 
 ---
 
 ## Multi-Layer Structured Data Extraction
 
-Before Gemini sees a product page, two complementary extractors run against the raw HTML and their results are merged. JSON-LD always wins on conflict — it is machine-generated structured data; BeautifulSoup results are best-effort heuristics.
+> **Why this matters:** An AI reading a product page like a human would has to guess the price from phrases like "1.799,00 lei" buried in paragraphs of marketing text. Instead, SmartShop extracts the price, rating, availability, and seller name from the structured data that the website already embeds for search engines — giving Gemini clean numbers to work with rather than prose to interpret.
+
+Before Gemini sees a product page, two complementary extractors run against the raw HTML and their results are merged. When both find a price, the more authoritative source wins.
 
 ### Layer 1 — `extract_jsonld_facts` (Schema.org JSON-LD + microdata)
 
@@ -362,67 +369,77 @@ Gemini is instructed to use these values directly for budget checks and scoring 
 
 ---
 
-## Vendor Logistics Registry
+## Autonomous Logistics Discovery
 
-Because product pages do not expose shipping fees or delivery windows to unauthenticated scrapers, Gemini was forced to score the `logistics` dimension from page prose alone — yielding 40% ("data absent") for almost every known retailer. The registry replaces that guess with deterministic pre-computed facts.
+> **The problem in plain terms:** A product page never tells you the shipping cost — that only appears once you're logged in at checkout. Earlier versions of SmartShop had to hard-code shipping rules for a handful of known Romanian stores, which meant any boutique, foreign marketplace, or new retailer got a generic "shipping unknown" score.
+>
+> **The fix:** SmartShop now reads the store's own shipping policy, exactly the way a human would — by scrolling to the footer and clicking the link.
 
-### How it works
+### How it works — the Two-Hop
 
-`logistics_data.py` contains a hard-coded `VENDOR_LOGISTICS_REGISTRY` dict keyed by domain (no `www.`). Each entry specifies:
+Every time a product page is scraped, the system automatically performs two extra steps in the background:
 
-| Field | Example (emag.ro) | Meaning |
+**Hop 1 — The Footer Sniper**
+
+The raw HTML is scanned for links whose address or visible text contains words like `shipping`, `delivery`, `livrare` (Romanian), `versand` (German), `livraison` (French), and so on. Both the URL slug and the clickable text are checked, so a link labelled "Livrare și Retur" is found just as reliably as one at `/pages/shipping-policy`. If a shipping policy link is found, its URL is saved. If a returns/refunds link is found too, that page is fetched immediately and its text is stored for the trust scorer.
+
+**Hop 2 — The Logistics Micro-Agent**
+
+Before the main scoring call, Gemini Flash is given the shipping policy text and the user's city and country. It fills out a strict data form — no free-form text allowed:
+
+```python
+class LogisticsData(BaseModel):
+    ships_to_user: bool              # Does this store ship here at all?
+    shipping_cost_ron: float | None  # Cost in RON (foreign currencies auto-converted)
+    estimated_days: str | None       # e.g. "3-5 business days"
+    free_shipping_threshold_ron: float | None  # e.g. 200.0 means "free above 200 RON"
+```
+
+The prompt includes approximate conversion rates (1 EUR ≈ 5 RON, 1 USD ≈ 4.6 RON, 1 GBP ≈ 5.9 RON) so a German boutique charging €8 shipping is correctly reported as ~40 RON for a user in Romania.
+
+### Score bands derived from the extracted data
+
+| Condition | Score | What it means for the user |
 |---|---|---|
-| `base_shipping_fee_ron` | `15` | Standard courier fee in RON |
-| `free_shipping_threshold_ron` | `1500` | Order total above which shipping is free (`None` for international) |
-| `easybox_available` | `True` | Whether a locker pick-up network exists |
-| `delivery_days` | `"1–3"` | Typical business-day window |
-| `same_day_cities` | `["Bucuresti", "Ilfov"]` | Cities eligible for same-day dispatch |
-| `hub_cities` | `["Bucuresti", "Cluj-Napoca", …]` | Regional fulfilment hubs (faster dispatch) |
+| Ships here + free shipping + ≤ 2 days | 90–100 | Best case — fast and free |
+| Ships here + free shipping + ≤ 5 days | 80–90 | Free shipping, standard window |
+| Ships here + free shipping (window unknown) | 75–85 | Free shipping confirmed |
+| Ships here + free above a threshold | 65–75 | Free if you spend enough |
+| Ships here + paid + fast (≤ 3 days) | 65–75 | Worth paying for the speed |
+| Ships here + paid + moderate (≤ 7 days) | 55–65 | Standard paid shipping |
+| Does not ship to the user's country | 0–20 | Critical penalty — product excluded or ranked last |
 
-Before Gemini sees the scoring prompt, `get_logistics_context(url, city, price)` is called per product. It:
-
-1. Extracts the domain from the product URL.
-2. Looks up the registry (returns `""` — a no-op — for unknown vendors so the existing fallback applies unchanged).
-3. Compares the confirmed price against the free-shipping threshold (RON only; foreign-currency products skip the comparison).
-4. Checks the user's city against `same_day_cities` then `hub_cities` using diacritic-insensitive partial matching (e.g., `"Cluj"` matches `"Cluj-Napoca"`).
-5. Returns a structured block ending with an explicit score band so Gemini treats logistics as arithmetic, not inference.
-
-### Score bands injected
-
-| Condition | Score band | Reason emitted |
-|---|---|---|
-| Free shipping + same-day delivery | 95–100 | free shipping + same-day delivery |
-| Free shipping + hub city | 90–95 | free shipping + local hub → fast delivery |
-| Free shipping, no hub | 80–88 | free shipping to destination |
-| Paid shipping + hub city | 65–75 | paid shipping but local hub reduces transit time |
-| Paid shipping, standard | 55–65 | paid shipping, standard transit |
-| Price unconfirmed, hub city | 70–85 | estimated from hub proximity (price not confirmed) |
-| Price unconfirmed, no hub | 55–70 | estimated from hub proximity (price not confirmed) |
-
-### Example injected block
+### Example output injected into the scoring prompt
 
 ```
-### VENDOR LOGISTICS CONTEXT (emag.ro → Craiova)
-• Shipping cost: FREE — order total (1799 RON) ≥ 1500 RON threshold
-• Delivery window: 1–3 business days — Craiova is a regional fulfilment hub → faster dispatch
-• Locker / Easybox: Available
-→ LOGISTICS SCORE GUIDANCE: 90–95 (free shipping + local hub → fast delivery)
+### VENDOR LOGISTICS CONTEXT (germanstore.de → Craiova, Romania)
+• Ships to your location: Yes
+• Shipping cost: 40 RON  (€8 converted at 1 EUR ≈ 5 RON)
+• Estimated delivery: 7-10 business days
+• Free shipping threshold: None
+→ LOGISTICS SCORE GUIDANCE: 55–65 (paid shipping, moderate delivery time)
    Use this guidance as your primary logistics score source.
 ```
 
-### Covered vendors (10)
+### Performance — domain-level caching
 
-`emag.ro`, `altex.ro`, `flanco.ro`, `mediagalaxy.ro`, `media-galaxy.ro`, `pcgarage.ro`, `cel.ro`, `dedeman.ro`, `evomag.ro`, `amazon.de`, `amazon.com`
+The two-hop runs **once per domain per server session**, not once per product. If a search returns three products from emag.ro, the shipping policy is fetched on the first product and the result is reused for the other two instantly. The `_logistics_cache` dict (keyed by domain) and the scraper's `_policy_cache` both persist in memory for the lifetime of the server process, surviving across multiple user searches.
 
-New vendors can be added by inserting a key matching the bare domain (without `www.`) into `VENDOR_LOGISTICS_REGISTRY`.
+### Works for every store on Earth
+
+Because the system reads the store's own policy page rather than looking up a pre-approved list, it works for any retailer in any language — a niche Japanese electronics shop, a boutique in Berlin, a sporting goods store in Poland. The only requirement is that the store has a publicly accessible shipping policy page, which virtually all legitimate retailers do.
 
 ---
 
 ## Network Performance Under Load
 
-When many users concurrently search for popular products (gaming laptops, phones), the naive approach — fetching and parsing every URL fresh for every request — wastes CPU, memory, and risks IP bans from e-commerce sites. Three complementary data structures in `scraper_service.py` and `jsonld_service.py` address this.
+When many users simultaneously search for popular products — gaming laptops, iPhones, running shoes — the simplest approach would be to scrape the same pages over and over for every request. That wastes server resources, slows everyone down, and risks getting the server's IP address blocked by e-commerce sites for making too many requests too quickly.
 
-### 1. Bloom Filter — RAM-efficient URL deduplication
+Four complementary mechanisms prevent this.
+
+### 1. Bloom Filter — remembering 100,000 URLs in 120 KB
+
+**In plain terms:** the server needs to remember which product pages it has already scraped so it doesn't fetch them again. Storing 100,000 full URLs as text would use 5–10 MB of RAM. A Bloom filter stores the same information in 120 KB — about the size of a small image — by recording a compact mathematical fingerprint of each URL instead of the URL itself.
 
 A Bloom filter is a probabilistic bit-array that answers "have we scraped this URL before?" using a fraction of the RAM a regular Python `set` would need.
 
@@ -514,9 +531,11 @@ At 256 entries × ~50 KB average HTML ≈ 13 MB upper bound on retained strings.
 
 > **Immutability contract**: the cached dict must not be mutated by callers. Downstream code that needs to modify extracted facts must copy the dict first.
 
-### 4. Priority Queue Scraper Scheduler — anti-ban without sacrificing speed
+### 4. Priority Queue Scraper Scheduler — polite to servers, fast for users
 
-Instead of applying a fixed sleep between all scrapes (which slows down real users) or randomised jitter (which gives no ordering guarantees), a min-heap priority queue assigns each scrape task a weight:
+**In plain terms:** if SmartShop scrapes pages at full speed for background tasks, e-commerce sites will eventually block its IP address. But slowing everything down to avoid bans would make real user searches feel sluggish. The priority queue solves this by giving live user searches immediate processing while making background tasks wait a few seconds between each request — polite enough to avoid bans, fast enough for real-time use.
+
+Instead of applying a fixed sleep between all scrapes (which slows everyone down equally), a min-heap priority queue assigns each scrape task a weight:
 
 | Priority | Value | Delay after scrape | Use case |
 |---|---|---|---|
@@ -677,12 +696,13 @@ SmartShoppingAssistant/
 │   │   ├── plan.py                    # /plan/status, /plan/select, /plan/checkout
 │   │   └── webhooks.py                # Lemon Squeezy payment webhook
 │   ├── services/
-│   │   ├── gemini_service.py          # Intent classification, scoring, embeddings
+│   │   ├── gemini_service.py          # Intent classification, scoring, embeddings,
+│   │   │                              #   logistics micro-agent (LogisticsData + response_schema)
 │   │   ├── tavily_service.py          # Product URL discovery
-│   │   ├── scraper_service.py         # curl_cffi + trafilatura + LRU/Bloom caches
+│   │   ├── scraper_service.py         # curl_cffi + trafilatura + two-hop policy fetch
+│   │   │                              #   + LRU/Bloom caches + priority-queue scheduler
 │   │   ├── jsonld_service.py          # Schema.org JSON-LD + BeautifulSoup4 extraction
-│   │   ├── logistics_data.py          # Vendor logistics registry + score-band injection
-│   │   ├── cache_service.py           # pgvector semantic cache
+│   │   ├── cache_service.py           # pgvector semantic cache + cache-clear orchestration
 │   │   └── supabase_service.py        # Admin client singleton
 │   └── tests/
 │       ├── mock/

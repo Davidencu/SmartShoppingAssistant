@@ -81,6 +81,7 @@ def clear_all_caches() -> dict:
     Returns a summary dict.
     """
     from services.scraper_service import clear_memory_cache
+    from services.gemini_service import clear_logistics_cache
 
     summary: dict = {}
 
@@ -95,10 +96,13 @@ def clear_all_caches() -> dict:
         summary["supabase_search_cache"] = f"error: {exc}"
         logger.error("[CACHE] Supabase clear failed: %s", exc)
 
-    # 2 & 3. In-process LRU + Bloom filter
+    # 2 & 3. In-process LRU + Bloom filter + policy cache
     summary.update(clear_memory_cache())
 
-    # 4. functools lru_cache for HTML parse results
+    # 4. Logistics extraction cache
+    summary.update(clear_logistics_cache())
+
+    # 5. functools lru_cache for HTML parse results
     extract_jsonld_facts.cache_clear()
     extract_bs4_facts.cache_clear()
     summary["jsonld_lru_cache"] = "cleared"
