@@ -28,7 +28,7 @@ from typing import Optional
 import trafilatura
 from curl_cffi.requests import Session
 
-from services.jsonld_service import extract_jsonld_facts
+from services.jsonld_service import extract_bs4_facts, extract_jsonld_facts
 
 logger = logging.getLogger(__name__)
 
@@ -171,8 +171,11 @@ def _fetch_one_sync(url: str) -> dict:
     if not html:
         return {"url": url, "markdown": "", "jsonld": {}}
 
-    # Extract JSON-LD from raw HTML BEFORE trafilatura strips the script tags
-    jsonld = extract_jsonld_facts(html)
+    # Extract structured data from raw HTML before trafilatura strips tags.
+    # BS4 covers Open Graph meta, itemprop, aria-labels, and data-* attributes —
+    # all common on e-commerce pages that don't emit full JSON-LD.
+    # JSON-LD is authoritative: it wins on any key conflict with BS4.
+    jsonld = {**extract_bs4_facts(html), **extract_jsonld_facts(html)}
     markdown = trafilatura.extract(html, include_tables=True, include_links=False) or ""
     return {"url": url, "markdown": markdown, "jsonld": jsonld}
 
@@ -284,6 +287,21 @@ class ScraperScheduler:
 
 # Module-level scheduler — workers start lazily on first request
 _scheduler = ScraperScheduler(num_workers=5)
+
+
+def clear_memory_cache() -> dict:
+    """
+    Reset all in-process caches:
+      • _url_cache  — LRU scrape-result store
+      • _scraped_bloom — URL-seen Bloom filter
+
+    Returns a dict with counts of evicted entries.
+    """
+    evicted = len(_url_cache)
+    _url_cache._store.clear()
+    _scraped_bloom._bits = bytearray(_scraped_bloom._size // 8 + 1)
+    logger.info("[CACHE] in-memory cache cleared: %d LRU entries evicted", evicted)
+    return {"lru_entries_evicted": evicted}
 
 
 # ─── Public API ────────────────────────────────────────────────────────────────

@@ -161,6 +161,13 @@ def _save_chat_history(
 
 # ─── Endpoints ────────────────────────────────────────────────────────────────
 
+@router.post("/admin/clear-cache")
+async def clear_cache(current_user: dict = Depends(get_current_user)):
+    """Wipe all cache layers (Supabase search_cache + in-process LRU/Bloom/lru_cache)."""
+    summary = await run_in_threadpool(cache_service.clear_all_caches)
+    return {"cleared": True, "summary": summary}
+
+
 @router.get("/history")
 async def get_history(current_user: dict = Depends(get_current_user)):
     """Return the last 50 chat turns for the authenticated user, newest first."""

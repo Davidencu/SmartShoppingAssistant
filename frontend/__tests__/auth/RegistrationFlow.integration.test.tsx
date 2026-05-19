@@ -67,6 +67,14 @@ describe("Registration flow — sequences", () => {
     sessionStorage.clear();
     mockPush.mockClear();
     mockReplace.mockClear();
+    // Simulate a device with biometrics so PasskeyEnrollment renders Face ID / Touch ID buttons.
+    Object.defineProperty(window, "PublicKeyCredential", {
+      value: {
+        isUserVerifyingPlatformAuthenticatorAvailable: jest.fn().mockResolvedValue(true),
+      },
+      writable: true,
+      configurable: true,
+    });
   });
 
   // ── Seq A: RegisterForm → OTP sent → navigate to /verify ─────────────────
@@ -216,12 +224,14 @@ describe("Registration flow — sequences", () => {
 
   // ── Seq D: PasskeyEnrollment reads sessionStorage ──────────────────────────
 
-  it("Seq D: PasskeyEnrollment shows both biometric buttons when session data present", () => {
+  it("Seq D: PasskeyEnrollment shows both biometric buttons when session data present", async () => {
     sessionStorage.setItem("pending_email", "alice@example.com");
     sessionStorage.setItem("passkey_options", JSON.stringify({ challenge: "abc" }));
     render(<PasskeyEnrollment />);
-    expect(screen.getByRole("button", { name: /set up with face id/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /set up with touch id/i })).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /set up with face id/i })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /set up with touch id/i })).toBeInTheDocument();
+    });
   });
 
   it("Seq D: PasskeyEnrollment with no pending_email → replaces to /login", async () => {
@@ -242,6 +252,7 @@ describe("Registration flow — sequences", () => {
     const setItem = jest.spyOn(Storage.prototype, "setItem");
 
     render(<PasskeyEnrollment />);
+    await waitFor(() => screen.getByRole("button", { name: /set up with face id/i }));
     fireEvent.click(screen.getByRole("button", { name: /set up with face id/i }));
 
     await waitFor(() => {
@@ -257,6 +268,7 @@ describe("Registration flow — sequences", () => {
     jest.mocked(api.registerPasskey).mockResolvedValue({ token: "jwt-abc" });
 
     render(<PasskeyEnrollment />);
+    await waitFor(() => screen.getByRole("button", { name: /set up with face id/i }));
     fireEvent.click(screen.getByRole("button", { name: /set up with face id/i }));
 
     await waitFor(() => {
@@ -271,6 +283,7 @@ describe("Registration flow — sequences", () => {
     jest.mocked(api.registerPasskey).mockResolvedValue({ token: "jwt-abc" });
 
     render(<PasskeyEnrollment />);
+    await waitFor(() => screen.getByRole("button", { name: /set up with face id/i }));
     fireEvent.click(screen.getByRole("button", { name: /set up with face id/i }));
 
     await waitFor(() => expect(mockPush).toHaveBeenCalledWith("/plan"));
@@ -288,6 +301,7 @@ describe("Registration flow — sequences", () => {
     const setItem = jest.spyOn(Storage.prototype, "setItem");
 
     render(<PasskeyEnrollment />);
+    await waitFor(() => screen.getByRole("button", { name: /set up with touch id/i }));
     fireEvent.click(screen.getByRole("button", { name: /set up with touch id/i }));
 
     await waitFor(() => {
@@ -305,6 +319,7 @@ describe("Registration flow — sequences", () => {
     jest.mocked(webauthn.enrollPasskey).mockRejectedValue(new Error("User cancelled"));
 
     render(<PasskeyEnrollment />);
+    await waitFor(() => screen.getByRole("button", { name: /set up with face id/i }));
     fireEvent.click(screen.getByRole("button", { name: /set up with face id/i }));
 
     await waitFor(() => {
@@ -324,6 +339,7 @@ describe("Registration flow — sequences", () => {
     jest.mocked(api.registerPasskey).mockResolvedValue({ token: "jwt-retry" });
 
     render(<PasskeyEnrollment />);
+    await waitFor(() => screen.getByRole("button", { name: /set up with face id/i }));
     fireEvent.click(screen.getByRole("button", { name: /set up with face id/i }));
     await waitFor(() => screen.getByText(/hardware error/i));
 
@@ -340,6 +356,7 @@ describe("Registration flow — sequences", () => {
     jest.mocked(api.registerPasskey).mockRejectedValue(new Error("Server error"));
 
     render(<PasskeyEnrollment />);
+    await waitFor(() => screen.getByRole("button", { name: /set up with face id/i }));
     fireEvent.click(screen.getByRole("button", { name: /set up with face id/i }));
 
     await waitFor(() => {
@@ -380,6 +397,7 @@ describe("Registration flow — sequences", () => {
     jest.mocked(api.registerPasskey).mockResolvedValue({ token: "chain-jwt" });
 
     const { unmount } = render(<PasskeyEnrollment />);
+    await waitFor(() => screen.getByRole("button", { name: /set up with face id/i }));
     fireEvent.click(screen.getByRole("button", { name: /set up with face id/i }));
     await waitFor(() => {
       expect(localStorage.getItem("smartshop_token")).toBe("chain-jwt");
@@ -405,6 +423,7 @@ describe("Registration flow — sequences", () => {
     jest.mocked(api.registerPasskey).mockResolvedValue({ token: "pro-jwt" });
 
     const { unmount } = render(<PasskeyEnrollment />);
+    await waitFor(() => screen.getByRole("button", { name: /set up with touch id/i }));
     fireEvent.click(screen.getByRole("button", { name: /set up with touch id/i }));
     await waitFor(() => {
       expect(localStorage.getItem("smartshop_token")).toBe("pro-jwt");

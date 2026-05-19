@@ -185,9 +185,12 @@ async def passkey_register(req: PasskeyRegisterRequest):
             expected_challenge=challenge,
             expected_rp_id=settings.rp_id,
             expected_origin=settings.frontend_origin,
+            require_user_verification=True,
         )
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Passkey registration failed: {exc}")
+
+    logger.info("[PASSKEY] registered device_type=%s", verification.credential_device_type)
 
     supabase = get_supabase_admin()
     supabase.table("profiles").insert(
@@ -279,6 +282,7 @@ async def passkey_verify(req: PasskeyVerifyRequest):
     except Exception as exc:
         raise HTTPException(status_code=401, detail=f"Passkey verification failed: {exc}")
 
+    logger.info("[AUTH] credential_device_type=%s", verification.credential_device_type)
     supabase.table("passkeys").update({"sign_count": verification.new_sign_count}).eq(
         "email", req.email
     ).execute()

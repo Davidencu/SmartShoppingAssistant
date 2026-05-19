@@ -12,16 +12,17 @@ SmartShop is a full-stack AI-powered shopping assistant. Users describe what the
 4. [Search Pipeline](#search-pipeline)
 5. [AI Scoring System](#ai-scoring-system)
 6. [Semantic Cache](#semantic-cache)
-7. [Structured Data Extraction (JSON-LD)](#structured-data-extraction-json-ld)
-8. [Network Performance Under Load](#network-performance-under-load)
-9. [Plan & Billing](#plan--billing)
-10. [Frontend](#frontend)
-11. [Database Schema](#database-schema)
-12. [Project Structure](#project-structure)
-13. [Local Setup](#local-setup)
-14. [Environment Variables](#environment-variables)
-15. [Running Tests](#running-tests)
-16. [Architectural Rules](#architectural-rules)
+7. [Multi-Layer Structured Data Extraction](#multi-layer-structured-data-extraction)
+8. [Vendor Logistics Registry](#vendor-logistics-registry)
+9. [Network Performance Under Load](#network-performance-under-load)
+10. [Plan & Billing](#plan--billing)
+11. [Frontend](#frontend)
+12. [Database Schema](#database-schema)
+13. [Project Structure](#project-structure)
+14. [Local Setup](#local-setup)
+15. [Environment Variables](#environment-variables)
+16. [Running Tests](#running-tests)
+17. [Architectural Rules](#architectural-rules)
 
 ---
 
@@ -89,7 +90,7 @@ SmartShop is a full-stack AI-powered shopping assistant. Users describe what the
 | AI — Intent & Scoring | Gemini 2.5 Flash (`gemini-2.5-flash`) |
 | AI — Embeddings | Gemini Embedding 001 (`gemini-embedding-001`, 768-dim) |
 | Web Search | Tavily (advanced search depth, optional domain filtering) |
-| Web Scraping | `curl_cffi` (browser fingerprinting) + `trafilatura` (content extraction) |
+| Web Scraping | `curl_cffi` (browser fingerprinting) + `trafilatura` (content extraction) + `BeautifulSoup4` / `lxml` (structured data extraction) |
 | Authentication | WebAuthn / Passkeys (FIDO2 biometric) + OTP email via Supabase |
 | Billing | Lemon Squeezy (Merchant of Record — handles global VAT/taxes) |
 | Future: Checkout | Stagehand (AI-driven browser automation via `page.act()`) |
@@ -210,16 +211,22 @@ User message
                            │
                            ▼
 ┌─────────────────────────────────────────────────────┐
-│ STAGE 4 — SCRAPING (curl_cffi + trafilatura)       │
+│ STAGE 4 — SCRAPING (4-layer extraction)            │
 │                                                     │
-│  Up to 5 URLs scraped concurrently (semaphore).    │
-│  Per URL:                                          │
-│  • curl_cffi fetches HTML with Chrome fingerprint  │
-│    (bypasses basic bot-detection)                  │
-│  • jsonld_service extracts Schema.org facts from   │
-│    raw HTML (price, availability, rating)          │
-│  • trafilatura extracts main body text, strips     │
-│    nav/footer/cookie banners/ads                   │
+│  Up to 5 URLs scraped concurrently via the         │
+│  priority-queue scheduler.  Per URL:               │
+│                                                     │
+│  1. curl_cffi fetches HTML with Chrome fingerprint │
+│     (bypasses basic bot-detection)                 │
+│  2. extract_jsonld_facts — Schema.org JSON-LD,     │
+│     HTML microdata, data-* attributes              │
+│  3. extract_bs4_facts (BeautifulSoup4/lxml) —     │
+│     Open Graph meta, itemprop content=,            │
+│     aria-label ratings, data-price attributes,     │
+│     og:site_name → seller context                  │
+│     JSON-LD wins on conflict (authoritative)       │
+│  4. trafilatura — main body text, strips           │
+│     nav/footer/cookie banners/ads                  │
 │                                                     │
 │  Pages with < 200 chars of content are discarded.  │
 └──────────────────────────┬──────────────────────────┘
@@ -262,7 +269,7 @@ Products are scored across four dimensions in a single Gemini call with structur
 |---|---|---|
 | `cost_efficiency` | 40% | Real value for the price paid. Being well under budget is rewarded, not penalised. |
 | `quality_confidence` | 35% | Confidence in product quality: ratings, review counts, spec signals, quality badges. |
-| `logistics` | 15% | Delivery speed, in-stock status, regional availability. |
+| `logistics` | 15% | Delivery speed, in-stock status, regional availability. Scored deterministically from the Vendor Logistics Registry when the retailer is known; falls back to page-text inference for unknown vendors. |
 | `trust` | 10% | Seller reputation — official brand vs. unknown third-party. |
 
 **Score anchors (0–100 per dimension):**
@@ -308,26 +315,106 @@ Prevents redundant API calls for effectively identical searches.
 
 ---
 
-## Structured Data Extraction (JSON-LD)
+## Multi-Layer Structured Data Extraction
 
-Before Gemini sees a product page, authoritative facts are extracted from raw HTML and injected as a machine-verified header above the scraped text.
+Before Gemini sees a product page, two complementary extractors run against the raw HTML and their results are merged. JSON-LD always wins on conflict — it is machine-generated structured data; BeautifulSoup results are best-effort heuristics.
 
-**Extraction sources (in priority order):**
+### Layer 1 — `extract_jsonld_facts` (Schema.org JSON-LD + microdata)
 
-1. **Schema.org JSON-LD** in `<script type="application/ld+json">` — handles list root, dict root, `offers` as list or nested dict, Romanian price format (`"1 799,00"` → `1799.0`), availability URLs → "In Stock" / "Out of Stock" / "Pre-order", and `aggregateRating`
-2. **HTML microdata** — `itemprop="ratingValue"` and `itemprop="reviewCount"` (covers sites that omit ratings from JSON-LD)
-3. **Data attributes** — `data-rating`, `data-score`, `data-review-count` (common on Romanian e-commerce)
+Targets structured data embedded by the site's own backend — the most authoritative source available without a logged-in session.
 
-**Example injected header:**
+| Source | What it extracts |
+|---|---|
+| `<script type="application/ld+json">` | price, currency, availability, rating, review count, brand, product name |
+| HTML microdata (`itemprop=`) | ratingValue, reviewCount (regex-based, covers sites that omit JSON-LD ratings) |
+| `data-rating`, `data-score`, `data-review-count` | fallback rating from custom data attributes |
+
+Handles Romanian price format (`"1 799,00"` → `1799.0`), availability URLs (`schema.org/InStock` → `"In Stock"`), `offers` as a list or nested dict, and `aggregateRating` from any nesting depth.
+
+### Layer 2 — `extract_bs4_facts` (BeautifulSoup4 / lxml)
+
+Targets the three common data sources that JSON-LD regularly misses on Romanian and international e-commerce sites.
+
+| Source | What it extracts | Score rescued |
+|---|---|---|
+| Open Graph / Product `<meta>` tags | `og:price:amount`, `product:price:currency`, `og:availability`, `product:rating:value`, `product:rating:count` | `cost_efficiency`, `logistics`, `quality` |
+| `og:site_name` / `application-name` | Retailer name (eMAG, Altex, Amazon…) | `trust` |
+| `itemprop` content= attribute | `price`, `priceCurrency`, `availability`, `ratingValue`, `reviewCount` — read from the `content=` attribute, not display text | all dimensions |
+| `aria-label` star ratings | `"4.7 out of 5 stars"`, `"4.7 din 5 stele"`, `"4.7 von 5 Sternen"`, `"rated 4.7"` — multi-language regex | `quality` |
+| `data-price`, `data-gtm-price`, `data-product-price`, … | GTM / GA tracking payload prices (present even when JS renders the display price) | `cost_efficiency` |
+
+Both extractors are wrapped in `@functools.lru_cache(maxsize=256)` — for popular products requested by multiple concurrent users, parsing runs once and all subsequent callers get the cached dict in O(1).
+
+**Merge rule:** `{**bs4_facts, **jsonld_facts}` — JSON-LD overwrites BS4 on any key conflict.
+
+**Example injected header (merged result):**
 ```
 ### MACHINE-VERIFIED DATA (Schema.org JSON-LD — authoritative)
 • CONFIRMED NAME: ASUS VivoBook 16 X1605ZA
+• CONFIRMED BRAND: ASUS
 • CONFIRMED PRICE: 1799.0 RON
 • CONFIRMED AVAILABILITY: In Stock
 • CONFIRMED RATING: 4.6/5 (312 reviews)
+• CONFIRMED SELLER: eMAG
 ```
 
 Gemini is instructed to use these values directly for budget checks and scoring without re-parsing from prose text.
+
+---
+
+## Vendor Logistics Registry
+
+Because product pages do not expose shipping fees or delivery windows to unauthenticated scrapers, Gemini was forced to score the `logistics` dimension from page prose alone — yielding 40% ("data absent") for almost every known retailer. The registry replaces that guess with deterministic pre-computed facts.
+
+### How it works
+
+`logistics_data.py` contains a hard-coded `VENDOR_LOGISTICS_REGISTRY` dict keyed by domain (no `www.`). Each entry specifies:
+
+| Field | Example (emag.ro) | Meaning |
+|---|---|---|
+| `base_shipping_fee_ron` | `15` | Standard courier fee in RON |
+| `free_shipping_threshold_ron` | `1500` | Order total above which shipping is free (`None` for international) |
+| `easybox_available` | `True` | Whether a locker pick-up network exists |
+| `delivery_days` | `"1–3"` | Typical business-day window |
+| `same_day_cities` | `["Bucuresti", "Ilfov"]` | Cities eligible for same-day dispatch |
+| `hub_cities` | `["Bucuresti", "Cluj-Napoca", …]` | Regional fulfilment hubs (faster dispatch) |
+
+Before Gemini sees the scoring prompt, `get_logistics_context(url, city, price)` is called per product. It:
+
+1. Extracts the domain from the product URL.
+2. Looks up the registry (returns `""` — a no-op — for unknown vendors so the existing fallback applies unchanged).
+3. Compares the confirmed price against the free-shipping threshold (RON only; foreign-currency products skip the comparison).
+4. Checks the user's city against `same_day_cities` then `hub_cities` using diacritic-insensitive partial matching (e.g., `"Cluj"` matches `"Cluj-Napoca"`).
+5. Returns a structured block ending with an explicit score band so Gemini treats logistics as arithmetic, not inference.
+
+### Score bands injected
+
+| Condition | Score band | Reason emitted |
+|---|---|---|
+| Free shipping + same-day delivery | 95–100 | free shipping + same-day delivery |
+| Free shipping + hub city | 90–95 | free shipping + local hub → fast delivery |
+| Free shipping, no hub | 80–88 | free shipping to destination |
+| Paid shipping + hub city | 65–75 | paid shipping but local hub reduces transit time |
+| Paid shipping, standard | 55–65 | paid shipping, standard transit |
+| Price unconfirmed, hub city | 70–85 | estimated from hub proximity (price not confirmed) |
+| Price unconfirmed, no hub | 55–70 | estimated from hub proximity (price not confirmed) |
+
+### Example injected block
+
+```
+### VENDOR LOGISTICS CONTEXT (emag.ro → Craiova)
+• Shipping cost: FREE — order total (1799 RON) ≥ 1500 RON threshold
+• Delivery window: 1–3 business days — Craiova is a regional fulfilment hub → faster dispatch
+• Locker / Easybox: Available
+→ LOGISTICS SCORE GUIDANCE: 90–95 (free shipping + local hub → fast delivery)
+   Use this guidance as your primary logistics score source.
+```
+
+### Covered vendors (10)
+
+`emag.ro`, `altex.ro`, `flanco.ro`, `mediagalaxy.ro`, `media-galaxy.ro`, `pcgarage.ro`, `cel.ro`, `dedeman.ro`, `evomag.ro`, `amazon.de`, `amazon.com`
+
+New vendors can be added by inserting a key matching the bare domain (without `www.`) into `VENDOR_LOGISTICS_REGISTRY`.
 
 ---
 
@@ -405,9 +492,9 @@ def put(self, key: str, value: dict) -> None:
         self._store[key] = value
 ```
 
-### 3. `@lru_cache` on JSON-LD Parsing — CPU deduplication
+### 3. `@lru_cache` on HTML Parsing — CPU deduplication
 
-Parsing raw HTML with regex + `json.loads` is CPU-intensive. When 50 users simultaneously search for the same iPhone model, they will all receive the same HTML from the product page. Without caching, `extract_jsonld_facts` runs 50 times for identical input.
+Parsing raw HTML with regex, `json.loads`, and BeautifulSoup is CPU-intensive. When 50 users simultaneously search for the same iPhone model, they will all receive the same HTML from the product page. Without caching, both extractors run 50 times for identical input.
 
 `@functools.lru_cache(maxsize=256)` turns repeated calls with the same HTML string into O(1) dict lookups:
 
@@ -415,7 +502,13 @@ Parsing raw HTML with regex + `json.loads` is CPU-intensive. When 50 users simul
 @functools.lru_cache(maxsize=_JSONLD_CACHE_SIZE)   # 256 unique HTML pages
 def extract_jsonld_facts(text: str) -> dict:
     ...
+
+@functools.lru_cache(maxsize=_JSONLD_CACHE_SIZE)   # same budget, same benefit
+def extract_bs4_facts(html: str) -> dict:
+    ...
 ```
+
+Both caches are cleared together by `cache_service.clear_all_caches()` via their respective `.cache_clear()` calls.
 
 At 256 entries × ~50 KB average HTML ≈ 13 MB upper bound on retained strings.
 
@@ -586,8 +679,9 @@ SmartShoppingAssistant/
 │   ├── services/
 │   │   ├── gemini_service.py          # Intent classification, scoring, embeddings
 │   │   ├── tavily_service.py          # Product URL discovery
-│   │   ├── scraper_service.py         # curl_cffi + trafilatura
-│   │   ├── jsonld_service.py          # Schema.org + microdata extraction
+│   │   ├── scraper_service.py         # curl_cffi + trafilatura + LRU/Bloom caches
+│   │   ├── jsonld_service.py          # Schema.org JSON-LD + BeautifulSoup4 extraction
+│   │   ├── logistics_data.py          # Vendor logistics registry + score-band injection
 │   │   ├── cache_service.py           # pgvector semantic cache
 │   │   └── supabase_service.py        # Admin client singleton
 │   └── tests/

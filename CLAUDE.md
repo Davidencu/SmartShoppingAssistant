@@ -8,7 +8,7 @@ SmartShop is an autonomous AI concierge. Users search for products via a natural
 *   **Backend:** FastAPI (Python 3.12+)
 *   **Database:** Supabase (PostgreSQL)
 *   **Automation:** Stagehand (AI-driven browser automation)
-*   **AI/LLM:** Gemini (Intent, Scoring, Logic), Tavily (Search), curl_cffi + Trafilatura (Scraping)
+*   **AI/LLM:** Gemini (Intent, Scoring, Logic), Tavily & Jina (Search/Scraping)
 *   **Authentication:** WebAuthn / Passkeys (Biometric)
 *   **Billing (MoR):** Lemon Squeezy (Handles global taxes/compliance)
 
@@ -33,7 +33,7 @@ SmartShop is an autonomous AI concierge. Users search for products via a natural
 
 ## 5. The State-Machine Flow
 1.  **Registration:** User signs up via Passkey and provides shipping details (Stored).
-2.  **Search (Free):** User prompts for a product. Gemini uses Tavily/curl_cffi+Trafilatura to find 3 options.
+2.  **Search (Free):** User prompts for a product. Gemini uses Tavily/Jina to find 3 options.
 3.  **Generative UI:** Next.js renders 3 interactive product cards.
 4.  **Selection:**
     *   If **Pro/Credits > 0**: User clicks "Buy" -> Triggers Ephemeral Card Form.
@@ -45,3 +45,22 @@ SmartShop is an autonomous AI concierge. Users search for products via a natural
 7.  **Pivot/Teardown:**
     *   If **Sold Out**: AI suggests the 2nd best item (State Pivot).
     *   If **Success/Fail**: FastAPI **violently deletes card from RAM** and reports to UI.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    

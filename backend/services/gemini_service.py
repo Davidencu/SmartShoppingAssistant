@@ -1,13 +1,16 @@
 import base64
 import json
 import logging
+import time
 from typing import Optional
 
 from google import genai
 from google.genai import types
+from google.genai import errors
 
 from core.config import settings
 from services.jsonld_service import build_facts_header
+from services.logistics_data import get_logistics_context
 
 logger = logging.getLogger(__name__)
 
@@ -15,6 +18,25 @@ _client = genai.Client(api_key=settings.gemini_api_key)
 
 _FLASH = "gemini-2.5-flash"
 _EMBED = "gemini-embedding-001"
+
+_BACKOFF_ATTEMPTS = 3
+
+
+def _with_backoff(fn, *args, **kwargs):
+    """Call fn(*args, **kwargs) with exponential backoff on ServerError (1 s → 2 s → raise)."""
+    delay = 1.0
+    for attempt in range(_BACKOFF_ATTEMPTS):
+        try:
+            return fn(*args, **kwargs)
+        except errors.ServerError as exc:
+            if attempt == _BACKOFF_ATTEMPTS - 1:
+                raise
+            logger.warning(
+                "[GEMINI] attempt %d/%d overloaded, retrying in %.0fs…",
+                attempt + 1, _BACKOFF_ATTEMPTS, delay,
+            )
+            time.sleep(delay)
+            delay *= 2
 
 # ─── Shopping System Prompt ────────────────────────────────────────────────────
 # Injected into every Gemini call. Defines ShopperAI's identity, intent system,
@@ -265,37 +287,52 @@ def classify_intent(messages, city: str = "", country: str = "") -> dict:
     """
     contents = _build_contents(messages)
     system = _SYSTEM_PROMPT + _location_block(city, country)
-    response = _client.models.generate_content(
-        model=_FLASH,
-        contents=contents,
-        config=types.GenerateContentConfig(
-            system_instruction=system,
-            response_mime_type="application/json",
-            temperature=0.1,
-            max_output_tokens=4096,
-            thinking_config=types.ThinkingConfig(thinking_budget=0),
-        ),
-    )
+
+    _clarify_fallback = {
+        "intent": "CLARIFY",
+        "reply": "I'm here to help you find the best product! Could you tell me what you're looking for and your budget?",
+        "collected_params": {
+            "category": None,
+            "budget": None,
+            "budget_max": None,
+            "budget_currency": None,
+            "preference": None,
+        },
+        "search_query": None,
+        "localized_search_query": None,
+        "local_domains": None,
+        "search_globally": False,
+        "is_refinement": False,
+    }
+
+    try:
+        response = _with_backoff(
+            _client.models.generate_content,
+            model=_FLASH,
+            contents=contents,
+            config=types.GenerateContentConfig(
+                system_instruction=system,
+                response_mime_type="application/json",
+                temperature=0.1,
+                max_output_tokens=4096,
+                thinking_config=types.ThinkingConfig(thinking_budget=0),
+            ),
+        )
+    except errors.ServerError:
+        logger.error("[INTENT] Gemini overloaded after %d attempts", _BACKOFF_ATTEMPTS)
+        _clarify_fallback["reply"] = (
+            "The AI is temporarily experiencing high traffic. Please try your search again in a few seconds."
+        )
+        return _clarify_fallback
+    except Exception as exc:
+        logger.error("[INTENT] Unexpected Gemini error: %s", exc)
+        return _clarify_fallback
+
     try:
         return json.loads(response.text)
     except (json.JSONDecodeError, AttributeError, TypeError):
-        logger.warning("Intent JSON parse failed — raw: %.200s", getattr(response, "text", ""))
-        return {
-            "intent": "CLARIFY",
-            "reply": "I'm here to help you find the best product! Could you tell me what you're looking for and your budget?",
-            "collected_params": {
-                "category": None,
-                "budget": None,
-                "budget_max": None,
-                "budget_currency": None,
-                "preference": None,
-            },
-            "search_query": None,
-            "localized_search_query": None,
-            "local_domains": None,
-            "search_globally": False,
-            "is_refinement": False,
-        }
+        logger.warning("[INTENT] JSON parse failed — raw: %.200s", getattr(response, "text", ""))
+        return _clarify_fallback
 
 
 def score_and_rank_products(
@@ -320,13 +357,21 @@ def score_and_rank_products(
     products_block = ""
     for i, r in enumerate(scraped_results, 1):
         md = (r.get("markdown") or "")[:3000]
-        facts_header = build_facts_header(r.get("jsonld") or {})
+        jsonld = r.get("jsonld") or {}
+        facts_header = build_facts_header(jsonld)
+        logistics_ctx = "" if is_global else get_logistics_context(
+            url=r["url"],
+            city=city,
+            price=jsonld.get("price"),
+            price_currency=jsonld.get("currency"),
+            budget_currency=budget_currency,
+        )
         products_block += (
             f"\n\n---\n"
             f"## PRODUCT {i}\n"
             f"Title: {r.get('title', 'Unknown')}\n"
             f"URL: {r['url']}\n\n"
-            f"{facts_header}{md}"
+            f"{facts_header}{logistics_ctx}{md}"
         )
 
     budget_str = f"{budget_max} {budget_currency}" if budget_max else "not specified"
@@ -376,14 +421,21 @@ If you cannot determine the exchange rate at all, assign cost_efficiency=40 and 
         )
         logistics_rubric = (
             f"LOGISTICS & CONVENIENCE (15% weight)\n"
-            f"  100 — In stock + same-day or next-day delivery available\n"
-            f"   70 — In stock + standard 2–5 day delivery\n"
+            f"Each product may include a '### VENDOR LOGISTICS CONTEXT' block above its page text.\n"
+            f"When that block is present, its '→ LOGISTICS SCORE GUIDANCE' line gives you the\n"
+            f"correct score band — use it directly. Do NOT override it with page-text guesses.\n"
+            f"When no context block is present, fall back to:\n"
+            f"  100 — In stock + same-day or next-day delivery confirmed on page\n"
+            f"   70 — In stock + standard 2–5 day delivery confirmed on page\n"
             f"   40 — Delivery time unverified for {location_str}, stock status unclear\n"
             f"    0 — Confirmed out of stock or discontinued"
         )
         unverified_shipping_note = (
-            f"5. If shipping time to {location_str} is unverified, assign logistics score 40 "
-            f"and note \"Shipping time to {location_str} unverified\" in reasoning. Do NOT score 0."
+            f"5. If a VENDOR LOGISTICS CONTEXT block is present for a product, follow its "
+            f"'→ LOGISTICS SCORE GUIDANCE' line. "
+            f"If no context block is present and shipping to {location_str} is unverified, "
+            f"assign logistics score 40 and note \"Shipping time to {location_str} unverified\". "
+            f"Do NOT score 0."
         )
 
     prompt = f"""\
@@ -528,15 +580,30 @@ well below the budget ceiling — excellent value for the price.' Flag any missi
 }}"""
 
     logger.info("[SCORING] sending %d products to Gemini for scoring", len(scraped_results))
-    response = _client.models.generate_content(
-        model=_FLASH,
-        contents=[types.Content(role="user", parts=[types.Part(text=prompt)])],
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json",
-            temperature=0.1,
-            max_output_tokens=8192,
-        ),
-    )
+    try:
+        response = _with_backoff(
+            _client.models.generate_content,
+            model=_FLASH,
+            contents=[types.Content(role="user", parts=[types.Part(text=prompt)])],
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                temperature=0.1,
+                max_output_tokens=8192,
+            ),
+        )
+    except errors.ServerError as e:
+        logger.error("[SCORING] Gemini overloaded after %d attempts: %s", _BACKOFF_ATTEMPTS, e)
+        return {
+            "error": "The AI scoring engine is currently experiencing high traffic. Please try your search again in a few seconds.",
+            "status": 503,
+        }
+    except Exception as e:
+        logger.error("[SCORING] Unexpected error in AI scoring: %s", e)
+        return {
+            "error": "Failed to rank products due to an internal error.",
+            "status": 500,
+        }
+
     raw = getattr(response, "text", None) or ""
     logger.info("[SCORING] Gemini response: %d chars — first 400: %s", len(raw), raw[:400])
     try:
@@ -634,7 +701,8 @@ def explain_no_results(
     )
 
     try:
-        response = _client.models.generate_content(
+        response = _with_backoff(
+            _client.models.generate_content,
             model=_FLASH,
             contents=[types.Content(role="user", parts=[types.Part(text=prompt)])],
             config=types.GenerateContentConfig(
@@ -647,7 +715,7 @@ def explain_no_results(
         if text:
             return text
     except Exception as exc:
-        logger.warning("[EXPLAIN] Gemini call failed: %s", exc)
+        logger.warning("[EXPLAIN] Gemini call failed after retries: %s", exc)
 
     # Deterministic fallback so we never return empty
     return (
@@ -663,12 +731,20 @@ def generate_embedding(text: str) -> list[float]:
     Generate a 768-dimensional text embedding for semantic cache lookup.
     Runs synchronously — call via run_in_threadpool from async handlers.
     """
-    response = _client.models.embed_content(
-        model=_EMBED,
-        contents=text,
-        config=types.EmbedContentConfig(
-            task_type="SEMANTIC_SIMILARITY",
-            output_dimensionality=768,
-        ),
-    )
-    return response.embeddings[0].values
+    try:
+        response = _with_backoff(
+            _client.models.embed_content,
+            model=_EMBED,
+            contents=text,
+            config=types.EmbedContentConfig(
+                task_type="SEMANTIC_SIMILARITY",
+                output_dimensionality=768,
+            ),
+        )
+        return response.embeddings[0].values
+    except errors.ServerError as exc:
+        logger.error("[EMBED] Gemini overloaded after %d attempts: %s", _BACKOFF_ATTEMPTS, exc)
+        return []
+    except Exception as exc:
+        logger.error("[EMBED] Unexpected embedding error: %s", exc)
+        return []

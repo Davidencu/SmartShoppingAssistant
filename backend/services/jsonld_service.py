@@ -17,6 +17,8 @@ import json
 import logging
 import re
 
+from bs4 import BeautifulSoup
+
 logger = logging.getLogger(__name__)
 
 # How many unique HTML pages to keep parsed results for.
@@ -207,6 +209,204 @@ def _extract_offer(offer: dict, facts: dict) -> None:
         facts["availability"] = "Discontinued"
 
 
+@functools.lru_cache(maxsize=_JSONLD_CACHE_SIZE)
+def extract_bs4_facts(html: str) -> dict:
+    """
+    Secondary structured-data extractor that covers signals JSON-LD misses:
+
+      1. Open Graph / Product-namespace <meta> tags  (og:price:amount, product:availability …)
+      2. Schema.org itemprop attributes              (price, priceCurrency, availability …)
+      3. aria-label star ratings                     ("4.7 out of 5", "4.7 din 5 stele" …)
+      4. data-* price attributes                     (data-price, data-gtm-price …)
+      5. og:site_name / application-name             → seller context for trust scoring
+
+    Returns a dict in the same format as extract_jsonld_facts.
+    JSON-LD is authoritative; callers should merge with JSON-LD winning on conflicts.
+    Callers must NOT mutate the returned dict.
+    """
+    facts: dict = {}
+    try:
+        soup = BeautifulSoup(html, "lxml")
+    except Exception as exc:
+        logger.debug("[BS4] parse error: %s", exc)
+        return facts
+
+    # ── helpers ──────────────────────────────────────────────────────────────
+
+    def _meta_content(*props: str, by_name: bool = False) -> str:
+        key = "name" if by_name else "property"
+        for prop in props:
+            tag = soup.find("meta", {key: prop})
+            if tag:
+                return (tag.get("content") or "").strip()
+        return ""
+
+    def _parse_price(raw: str) -> float | None:
+        cleaned = re.sub(r"[^\d.,]", "", raw).replace(",", ".")
+        # "1.799.00" → keep only the last decimal group
+        if cleaned.count(".") > 1:
+            cleaned = cleaned.replace(".", "", cleaned.count(".") - 1)
+        try:
+            v = float(cleaned)
+            return v if v > 0 else None
+        except ValueError:
+            return None
+
+    def _norm_availability(raw: str) -> str | None:
+        lw = raw.lower()
+        if any(k in lw for k in ("instock", "in_stock", "in stock", "available", "disponibil")):
+            return "In Stock"
+        if any(k in lw for k in ("outofstock", "out_of_stock", "out of stock",
+                                  "epuizat", "indisponibil", "unavailable")):
+            return "Out of Stock"
+        if any(k in lw for k in ("preorder", "pre-order", "pre_order")):
+            return "Pre-order"
+        return None
+
+    # ── 1. Open Graph / Product-namespace meta tags ───────────────────────────
+
+    if "price" not in facts:
+        raw = _meta_content("og:price:amount", "product:price:amount")
+        if raw:
+            v = _parse_price(raw)
+            if v:
+                facts["price"] = v
+
+    if "currency" not in facts:
+        raw = _meta_content("og:price:currency", "product:price:currency")
+        if raw:
+            facts["currency"] = raw.upper()
+
+    if "availability" not in facts:
+        raw = _meta_content("og:availability", "product:availability")
+        if raw:
+            av = _norm_availability(raw)
+            if av:
+                facts["availability"] = av
+
+    _rv: float | None = None
+    _rc: str | None = None
+
+    raw = _meta_content("product:rating:value")
+    if raw:
+        try:
+            v = float(raw)
+            if 0.0 < v <= 5.0:
+                _rv = v
+        except ValueError:
+            pass
+
+    raw = _meta_content("product:rating:count", "product:review_count")
+    if raw:
+        rc = re.sub(r"\D", "", raw)
+        if rc:
+            _rc = rc
+
+    # Site name → seller identity (helps trust scoring)
+    if "seller" not in facts:
+        raw = _meta_content("og:site_name") or _meta_content("application-name", by_name=True)
+        if raw:
+            facts["seller"] = raw
+
+    # ── 2. Schema.org itemprop (content= attribute takes priority over text) ──
+
+    if "price" not in facts:
+        tag = soup.find(attrs={"itemprop": "price"})
+        if tag:
+            raw = tag.get("content") or tag.get_text(strip=True)
+            if raw:
+                v = _parse_price(raw)
+                if v:
+                    facts["price"] = v
+
+    if "currency" not in facts:
+        tag = soup.find(attrs={"itemprop": "priceCurrency"})
+        if tag:
+            raw = tag.get("content") or tag.get_text(strip=True)
+            if raw:
+                facts["currency"] = raw.strip().upper()
+
+    if "availability" not in facts:
+        tag = soup.find(attrs={"itemprop": "availability"})
+        if tag:
+            # <link itemprop="availability" href="schema.org/InStock"> or text
+            raw = tag.get("href") or tag.get("content") or tag.get_text(strip=True)
+            if raw:
+                av = _norm_availability(raw)
+                if av:
+                    facts["availability"] = av
+
+    if _rv is None:
+        tag = soup.find(attrs={"itemprop": "ratingValue"})
+        if tag:
+            raw = tag.get("content") or tag.get_text(strip=True)
+            try:
+                v = float(raw.replace(",", "."))
+                if 0.0 < v <= 5.0:
+                    _rv = v
+            except (ValueError, AttributeError):
+                pass
+
+    if _rc is None:
+        for ip in ("reviewCount", "ratingCount"):
+            tag = soup.find(attrs={"itemprop": ip})
+            if tag:
+                raw = re.sub(r"\D", "", tag.get("content") or tag.get_text(strip=True))
+                if raw:
+                    _rc = raw
+                    break
+
+    # ── 3. aria-label star ratings ────────────────────────────────────────────
+
+    if _rv is None:
+        for el in soup.find_all(attrs={"aria-label": True}):
+            label = el["aria-label"]
+            # "4.7 out of 5 stars", "4.7 din 5 stele", "4,7 de 5", "rated 4.7"
+            m = re.search(
+                r'(\d[.,]\d+|\d+)\s*(?:out\s+of|din|von|sur|de|\/)\s*5',
+                label, re.IGNORECASE,
+            )
+            if not m:
+                m = re.search(r'rated?\s+(\d[.,]\d+|\d+)', label, re.IGNORECASE)
+            if m:
+                try:
+                    v = float(m.group(1).replace(",", "."))
+                    if 0.0 < v <= 5.0:
+                        _rv = v
+                        # Try to find a nearby review count in the same element's text
+                        nearby = el.get_text(" ", strip=True)
+                        rc_m = re.search(r'(\d[\d\s,\.]+)\s*(?:review|rating|pareri|avis|Bewert)', nearby, re.IGNORECASE)
+                        if rc_m and _rc is None:
+                            _rc = re.sub(r"\D", "", rc_m.group(1))
+                        break
+                except ValueError:
+                    pass
+
+    # ── 4. data-* price attributes (GTM / GA tracking payloads) ──────────────
+
+    if "price" not in facts:
+        for attr in ("data-price", "data-product-price", "data-price-amount",
+                     "data-gtm-price", "data-sale-price", "data-final-price"):
+            tag = soup.find(attrs={attr: True})
+            if tag:
+                v = _parse_price(str(tag[attr]))
+                if v:
+                    facts["price"] = v
+                    break
+
+    # ── Assemble rating string ────────────────────────────────────────────────
+
+    if _rv is not None and "rating" not in facts:
+        rating_str = f"{_rv}/5"
+        if _rc:
+            rating_str += f" ({_rc} reviews)"
+        facts["rating"] = rating_str
+
+    if facts:
+        logger.debug("[BS4] extracted: %s", facts)
+    return facts
+
+
 def build_facts_header(jsonld: dict) -> str:
     """
     Convert extracted JSON-LD facts into a prompt-ready authoritative header block.
@@ -229,6 +429,8 @@ def build_facts_header(jsonld: dict) -> str:
         lines.append(f"CONFIRMED AVAILABILITY: {jsonld['availability']}")
     if "rating" in jsonld:
         lines.append(f"CONFIRMED RATING: {jsonld['rating']}")
+    if "seller" in jsonld:
+        lines.append(f"CONFIRMED SELLER: {jsonld['seller']}")
 
     if not lines:
         return ""
