@@ -9,18 +9,14 @@ import pytest
 
 class TestLoginSequences:
 
-    # ------------------------------------------------------------------
     # Sequence A – unknown email → frontend should redirect to /register
-    # ------------------------------------------------------------------
     def test_seq_A_unknown_email(self, client, mock_supabase):
         mock_supabase.table.return_value.select.return_value.eq.return_value.execute.return_value.data = []
         resp = client.post("/auth/check-email", json={"email": "new@example.com"})
         assert resp.status_code == 200
         assert resp.json() == {"exists": False}
 
-    # ------------------------------------------------------------------
     # Sequence B – full happy path: check → challenge → verify → token
-    # ------------------------------------------------------------------
     def test_seq_B_full_login_happy_path(self, client, mock_supabase, mocker):
         import routers.auth as auth_module
 
@@ -75,9 +71,7 @@ class TestLoginSequences:
         assert resp.status_code == 200
         assert "token" in resp.json()
 
-    # ------------------------------------------------------------------
     # Sequence C – profile exists but no passkey → challenge returns 404
-    # ------------------------------------------------------------------
     def test_seq_C_no_passkey_blocks_login(self, client, mock_supabase):
         profile_result = MagicMock()
         profile_result.data = [{"id": "user-uuid"}]
@@ -95,9 +89,7 @@ class TestLoginSequences:
         resp = client.post("/auth/passkey/challenge", json={"email": "user@example.com"})
         assert resp.status_code == 404
 
-    # ------------------------------------------------------------------
     # Sequence D – challenge issued, biometric signature rejected → 401
-    # ------------------------------------------------------------------
     def test_seq_D_wrong_credential_rejected(self, client, mock_supabase, mocker):
         import routers.auth as auth_module
 
@@ -124,9 +116,7 @@ class TestLoginSequences:
         assert resp.status_code == 401
         assert "Passkey verification failed" in resp.json()["detail"]
 
-    # ------------------------------------------------------------------
     # Sequence E – verify called with no prior challenge → 400
-    # ------------------------------------------------------------------
     def test_seq_E_verify_without_challenge_rejected(self, client):
         import routers.auth as auth_module
 
@@ -137,17 +127,13 @@ class TestLoginSequences:
         )
         assert resp.status_code == 400
 
-    # ------------------------------------------------------------------
     # Sequence F – profile not found → challenge gate returns 404
-    # ------------------------------------------------------------------
     def test_seq_F_unknown_profile_blocks_challenge(self, client, mock_supabase):
         mock_supabase.table.return_value.select.return_value.eq.return_value.execute.return_value.data = []
         resp = client.post("/auth/passkey/challenge", json={"email": "ghost@example.com"})
         assert resp.status_code == 404
 
-    # ------------------------------------------------------------------
     # Sequence G – second challenge overwrites the first
-    # ------------------------------------------------------------------
     def test_seq_G_second_challenge_replaces_first(self, client, mock_supabase):
         import routers.auth as auth_module
 
@@ -176,9 +162,7 @@ class TestLoginSequences:
         # WebAuthn challenges are cryptographically random — they must differ
         assert first != second
 
-    # ------------------------------------------------------------------
     # Sequence H – successful login clears the challenge (no replay)
-    # ------------------------------------------------------------------
     def test_seq_H_challenge_consumed_after_verify(self, client, mock_supabase, mocker):
         import routers.auth as auth_module
 

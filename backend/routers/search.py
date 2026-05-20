@@ -31,7 +31,7 @@ def _build_search_query(
     return f"{base} buy", local_domains or None
 
 
-# ─── Pipeline Helper ──────────────────────────────────────────────────────────
+# Pipeline Helper
 
 async def _run_product_pipeline(
     query: str,
@@ -134,7 +134,7 @@ async def _run_product_pipeline(
     return ranked
 
 
-# ─── Background Tasks ──────────────────────────────────────────────────────────
+# Background Tasks
 
 def _save_chat_history(
     user_id: str,
@@ -159,7 +159,7 @@ def _save_chat_history(
         logger.warning("chat_history write failed: %s", exc)
 
 
-# ─── Endpoints ────────────────────────────────────────────────────────────────
+# Endpoints
 
 @router.post("/admin/clear-cache")
 async def clear_cache(current_user: dict = Depends(get_current_user)):
@@ -208,7 +208,7 @@ async def chat(
     city: str = profile.get("city") or ""
     country: str = profile.get("country") or ""
 
-    # ── Step 1: Intent gate ── cheap, fast Gemini call ──────────────────────
+    # Step 1: Intent gate ── cheap, fast Gemini call
     intent_data = await run_in_threadpool(
         gemini_service.classify_intent, req.messages, city, country
     )
@@ -233,7 +233,7 @@ async def chat(
         preference=raw_params.get("preference"),
     )
 
-    # ── Step 2: CHAT / CLARIFY — return immediately, Tavily/Jina stay asleep ─
+    # Step 2: CHAT / CLARIFY — return immediately, Tavily/Jina stay asleep
     if intent in ("CHAT", "CLARIFY"):
         response = ChatResponse(
             intent=intent,
@@ -250,7 +250,7 @@ async def chat(
         )
         return response
 
-    # ── Step 3: SEARCH pipeline ───────────────────────────────────────────────
+    # Step 3: SEARCH pipeline
 
     excluded_urls: set[str] = set(req.excluded_urls) if req.excluded_urls else set()
 

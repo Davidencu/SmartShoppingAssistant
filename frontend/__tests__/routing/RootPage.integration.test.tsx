@@ -34,7 +34,7 @@ describe("RootPage routing", () => {
     setHash("/");
   });
 
-  // ── No hash, no token ─────────────────────────────────────────────────────
+  // No hash, no token
 
   it("no hash + no token → replaces to /login", async () => {
     render(<RootPage />);
@@ -43,7 +43,7 @@ describe("RootPage routing", () => {
     });
   });
 
-  // ── No hash, token present ────────────────────────────────────────────────
+  // No hash, token present
 
   it("no hash + token in localStorage → replaces to /dashboard", async () => {
     localStorage.setItem("smartshop_token", "valid-jwt");
@@ -60,7 +60,7 @@ describe("RootPage routing", () => {
     expect(api.verifyMagicLink).not.toHaveBeenCalled();
   });
 
-  // ── Hash with type=signup ─────────────────────────────────────────────────
+  // Hash with type=signup
 
   it("hash type=signup → calls verifyMagicLink with the access_token", async () => {
     jest.mocked(api.verifyMagicLink).mockResolvedValue({
@@ -107,7 +107,7 @@ describe("RootPage routing", () => {
     });
   });
 
-  // ── Hash with type=magiclink ──────────────────────────────────────────────
+  // Hash with type=magiclink
 
   it("hash type=magiclink → calls verifyMagicLink and redirects to /register/passkey", async () => {
     jest.mocked(api.verifyMagicLink).mockResolvedValue({
@@ -121,7 +121,7 @@ describe("RootPage routing", () => {
     });
   });
 
-  // ── Hash with type=email ──────────────────────────────────────────────────
+  // Hash with type=email
 
   it("hash type=email → calls verifyMagicLink and redirects to /register/passkey", async () => {
     jest.mocked(api.verifyMagicLink).mockResolvedValue({
@@ -135,7 +135,7 @@ describe("RootPage routing", () => {
     });
   });
 
-  // ── Hash with unrecognised type ───────────────────────────────────────────
+  // Hash with unrecognised type
 
   it("hash type=recovery → ignores magic link, falls through to token check → /login", async () => {
     setHash("#access_token=TOKEN&type=recovery");
@@ -156,7 +156,7 @@ describe("RootPage routing", () => {
     expect(api.verifyMagicLink).not.toHaveBeenCalled();
   });
 
-  // ── Hash without access_token ─────────────────────────────────────────────
+  // Hash without access_token
 
   it("hash without access_token → falls through to token check → /login", async () => {
     setHash("#type=signup&foo=bar");
@@ -167,7 +167,7 @@ describe("RootPage routing", () => {
     expect(api.verifyMagicLink).not.toHaveBeenCalled();
   });
 
-  // ── verifyMagicLink API failure ───────────────────────────────────────────
+  // verifyMagicLink API failure
 
   it("hash type=signup + API throws → replaces to /register, no sessionStorage written", async () => {
     jest.mocked(api.verifyMagicLink).mockRejectedValue(new Error("Invalid token"));
@@ -189,7 +189,7 @@ describe("RootPage routing", () => {
     expect(mockReplace).not.toHaveBeenCalledWith("/login");
   });
 
-  // ── magic link takes precedence over existing token ───────────────────────
+  // magic link takes precedence over existing token
 
   it("hash type=signup + token in localStorage → still processes magic link (registration wins)", async () => {
     localStorage.setItem("smartshop_token", "existing-jwt");

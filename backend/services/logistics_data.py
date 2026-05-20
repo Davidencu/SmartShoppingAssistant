@@ -10,7 +10,7 @@ Add new vendors by inserting a key matching the domain (without www.).
 import re
 import unicodedata
 
-# ── Vendor registry ────────────────────────────────────────────────────────────
+# Vendor registry
 
 VENDOR_LOGISTICS_REGISTRY: dict[str, dict] = {
     "emag.ro": {
@@ -108,7 +108,7 @@ VENDOR_LOGISTICS_REGISTRY: dict[str, dict] = {
 }
 
 
-# ── Helpers ────────────────────────────────────────────────────────────────────
+# Helpers
 
 def _strip_diacritics(text: str) -> str:
     return "".join(
@@ -132,7 +132,7 @@ def _extract_domain(url: str) -> str:
     return m.group(1).lower() if m else ""
 
 
-# ── Public API ─────────────────────────────────────────────────────────────────
+# Public API
 
 def get_logistics_context(
     url: str,
@@ -158,7 +158,7 @@ def get_logistics_context(
     is_hub = _city_match(city, rules["hub_cities"]) if city else False
     is_same_day = _city_match(city, rules["same_day_cities"]) if city else False
 
-    # ── Free-shipping eligibility ──────────────────────────────────────────
+    # Free-shipping eligibility
     threshold = rules["free_shipping_threshold_ron"]
     # Only compare when both price and threshold exist and currencies are RON-compatible
     currency_ok = (price_currency or budget_currency or "RON").upper() == "RON"
@@ -186,7 +186,7 @@ def get_logistics_context(
             f"(price unconfirmed — cannot verify eligibility)"
         )
 
-    # ── Hub / delivery window ──────────────────────────────────────────────
+    # Hub / delivery window
     if is_same_day:
         delivery_note = f"Same-day delivery available in {city_display}"
         delivery_days = "same day"
@@ -199,7 +199,7 @@ def get_logistics_context(
 
     easybox_note = "Available" if rules["easybox_available"] else "Not available"
 
-    # ── Score guidance ─────────────────────────────────────────────────────
+    # Score guidance
     if free_shipping is True and is_same_day:
         score_band = "95–100"
         score_reason = "free shipping + same-day delivery"

@@ -15,9 +15,7 @@ from jose import jwt
 from core.config import settings
 
 
-# ──────────────────────────────────────────────────────────────────────────────
 # Fixtures
-# ──────────────────────────────────────────────────────────────────────────────
 
 @pytest.fixture(autouse=True)
 def clean_auth_state():
@@ -38,9 +36,7 @@ def reset_store_id():
     m._ls_store_id = None
 
 
-# ──────────────────────────────────────────────────────────────────────────────
 # Helpers
-# ──────────────────────────────────────────────────────────────────────────────
 
 REG = {
     "email": "alice@example.com",
@@ -92,9 +88,7 @@ def _no_profile(mock_supabase):
     mock_supabase.table.return_value.select.return_value.eq.return_value.execute.return_value.data = []
 
 
-# ──────────────────────────────────────────────────────────────────────────────
 # Seq A – Full happy path: register → free plan
-# ──────────────────────────────────────────────────────────────────────────────
 
 class TestFullRegistrationToFreePlan:
 
@@ -182,9 +176,7 @@ class TestFullRegistrationToFreePlan:
         assert plan_resp.json() == {"plan": "free", "checkout_credits": 2}
 
 
-# ──────────────────────────────────────────────────────────────────────────────
 # Seq B – Full happy path: register → pro plan via checkout + webhook
-# ──────────────────────────────────────────────────────────────────────────────
 
 class TestFullRegistrationToProPlan:
 
@@ -256,9 +248,7 @@ class TestFullRegistrationToProPlan:
         assert resp.json()["checkout_credits"] == 0
 
 
-# ──────────────────────────────────────────────────────────────────────────────
 # Seq C – Duplicate email blocked at send-otp
-# ──────────────────────────────────────────────────────────────────────────────
 
 class TestDuplicateEmailBlocked:
 
@@ -284,9 +274,7 @@ class TestDuplicateEmailBlocked:
         assert resp.json()["exists"] is True
 
 
-# ──────────────────────────────────────────────────────────────────────────────
 # Seq D – verify-magic edge cases
-# ──────────────────────────────────────────────────────────────────────────────
 
 class TestVerifyMagicEdgeCases:
 
@@ -316,9 +304,7 @@ class TestVerifyMagicEdgeCases:
         assert len(m._challenges["alice@example.com"]) > 0
 
 
-# ──────────────────────────────────────────────────────────────────────────────
 # Seq F – passkey/register error cases
-# ──────────────────────────────────────────────────────────────────────────────
 
 class TestPasskeyRegisterErrorCases:
 
@@ -376,9 +362,7 @@ class TestPasskeyRegisterErrorCases:
         assert "expired" in resp.json()["detail"].lower()
 
 
-# ──────────────────────────────────────────────────────────────────────────────
 # Seq H – JWT token integrity
-# ──────────────────────────────────────────────────────────────────────────────
 
 class TestJwtIntegrity:
 
@@ -433,9 +417,7 @@ class TestJwtIntegrity:
         assert resp.status_code == 401
 
 
-# ──────────────────────────────────────────────────────────────────────────────
 # Seq I – Concurrent registrations are isolated
-# ──────────────────────────────────────────────────────────────────────────────
 
 class TestConcurrentRegistrations:
 
@@ -470,9 +452,7 @@ class TestConcurrentRegistrations:
         assert m._registration_data["alice@example.com"]["street_address"] == "New St 99"
 
 
-# ──────────────────────────────────────────────────────────────────────────────
 # Plan endpoint integration
-# ──────────────────────────────────────────────────────────────────────────────
 
 class TestPlanEndpointIntegration:
 
@@ -586,9 +566,7 @@ class TestPlanEndpointIntegration:
         assert resp.status_code == 502
 
 
-# ──────────────────────────────────────────────────────────────────────────────
 # Seq N/O – Webhook integration
-# ──────────────────────────────────────────────────────────────────────────────
 
 class TestWebhookIntegration:
 

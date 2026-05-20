@@ -41,7 +41,7 @@ describe("DashboardLayout auth guard", () => {
     jest.mocked(api.getPlanStatus).mockResolvedValue({ plan: "free", checkout_credits: 2 });
   });
 
-  // ── No token ───────────────────────────────────────────────────────────────
+  // No token
 
   it("no token → replaces to /login", async () => {
     render(<DashboardLayout><div>child</div></DashboardLayout>);
@@ -62,7 +62,7 @@ describe("DashboardLayout auth guard", () => {
     expect(screen.queryByText("SmartShop")).not.toBeInTheDocument();
   });
 
-  // ── Token present ──────────────────────────────────────────────────────────
+  // Token present
 
   it("token present → renders children", async () => {
     localStorage.setItem("smartshop_token", "valid-jwt");
@@ -103,7 +103,7 @@ describe("DashboardLayout auth guard", () => {
     });
   });
 
-  // ── Plan badge ─────────────────────────────────────────────────────────────
+  // Plan badge
 
   it("free plan → shows Free badge", async () => {
     jest.mocked(api.getPlanStatus).mockResolvedValue({ plan: "free", checkout_credits: 2 });
@@ -131,7 +131,7 @@ describe("DashboardLayout auth guard", () => {
     expect(screen.queryByTestId("plan-badge")).not.toBeInTheDocument();
   });
 
-  // ── Nav actions ────────────────────────────────────────────────────────────
+  // Nav actions
 
   it("Plan nav click → pushes to /plan", async () => {
     localStorage.setItem("smartshop_token", "valid-jwt");
@@ -157,7 +157,7 @@ describe("DashboardLayout auth guard", () => {
     expect(mockReplace).toHaveBeenCalledWith("/login");
   });
 
-  // ── Children rendering ─────────────────────────────────────────────────────
+  // Children rendering
 
   it("renders children content inside the layout wrapper", async () => {
     localStorage.setItem("smartshop_token", "valid-jwt");

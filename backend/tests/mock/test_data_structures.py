@@ -12,7 +12,7 @@ import pytest
 from services.scraper_service import BloomFilter, Priority, ScraperScheduler, _LRUCache
 
 
-# ─── BloomFilter ────────────────────────────────────────────────────────────────
+# BloomFilter
 
 class TestBloomFilter:
 
@@ -65,7 +65,7 @@ class TestBloomFilter:
         assert size_bytes < 200_000, f"Bloom filter too large: {size_bytes} bytes"
 
 
-# ─── _LRUCache ──────────────────────────────────────────────────────────────────
+# _LRUCache
 
 class TestLRUCache:
 
@@ -110,7 +110,7 @@ class TestLRUCache:
         assert len(cache) == 2
 
 
-# ─── Priority enum ──────────────────────────────────────────────────────────────
+# Priority enum
 
 class TestPriority:
 
@@ -145,7 +145,7 @@ class TestPriority:
         assert heapq.heappop(heap)[2] == "low"
 
 
-# ─── ScraperScheduler (async) ───────────────────────────────────────────────────
+# ScraperScheduler (async)
 
 class TestScraperScheduler:
 
@@ -192,7 +192,7 @@ class TestScraperScheduler:
         assert first[2] == "user-url"
 
 
-# ─── extract_jsonld_facts lru_cache ─────────────────────────────────────────────
+# extract_jsonld_facts lru_cache
 
 class TestJsonldLRUCache:
 

@@ -25,7 +25,7 @@ def _require_keys():
         pytest.skip(f"Missing env vars: {', '.join(missing)}")
 
 
-# ─── Gemini: Intent Classification ────────────────────────────────────────────
+# Gemini: Intent Classification
 
 class TestLiveIntentClassification:
     def setup_method(self):
@@ -86,7 +86,7 @@ class TestLiveIntentClassification:
         assert params.get("budget_max") == 2000.0
 
 
-# ─── Gemini: Embeddings ───────────────────────────────────────────────────────
+# Gemini: Embeddings
 
 class TestLiveEmbeddings:
     def setup_method(self):
@@ -120,7 +120,7 @@ class TestLiveEmbeddings:
         assert sim_different < sim_similar, "Dissimilar query scored higher than similar"
 
 
-# ─── Tavily: Product Search ────────────────────────────────────────────────────
+# Tavily: Product Search
 
 class TestLiveTavily:
     def setup_method(self):
@@ -143,7 +143,7 @@ class TestLiveTavily:
         assert isinstance(results, list)
 
 
-# ─── Scraper: URL Scraping ───────────────────────────────────────────────────────
+# Scraper: URL Scraping
 
 class TestLiveScraper:
     def setup_method(self):
@@ -172,7 +172,7 @@ class TestLiveScraper:
         assert results[0]["markdown"] == ""
 
 
-# ─── Full Pipeline (expensive — use sparingly) ────────────────────────────────
+# Full Pipeline (expensive — use sparingly)
 
 class TestLiveFullPipeline:
     def setup_method(self):
@@ -219,7 +219,7 @@ class TestLiveFullPipeline:
         assert ranked[0]["value_score"] >= ranked[-1]["value_score"]
 
 
-# ─── Real-user intent classification scenarios ────────────────────────────────
+# Real-user intent classification scenarios
 
 class TestLiveRealUserIntents:
     """
@@ -371,7 +371,7 @@ class TestLiveRealUserIntents:
             )
 
 
-# ─── Under-budget scoring (full pipeline, expensive) ─────────────────────────
+# Under-budget scoring (full pipeline, expensive)
 
 class TestLiveUnderBudgetScoring:
     """
@@ -479,7 +479,7 @@ class TestLiveUnderBudgetScoring:
         assert len(ranked[0].get("reasoning", "")) > 20
 
 
-# ─── explain_no_results (cheap: single Gemini call) ──────────────────────────
+# explain_no_results (cheap: single Gemini call)
 
 class TestLiveExplainNoResults:
     """Verify explain_no_results() returns coherent diagnostic text."""
@@ -529,7 +529,7 @@ class TestLiveExplainNoResults:
         assert len(result) > 10
 
 
-# ─── "Not satisfied" follow-up intent classification ─────────────────────────
+# "Not satisfied" follow-up intent classification
 
 class TestLiveNotSatisfiedIntent:
     """

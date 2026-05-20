@@ -5,7 +5,7 @@ from services.jsonld_service import extract_jsonld_facts, build_facts_header
 
 class TestExtractJsonldFacts:
 
-    # ── Root shapes ────────────────────────────────────────────────────────────
+    # Root shapes
 
     def test_single_dict_root(self):
         html = """<script type="application/ld+json">
@@ -36,7 +36,7 @@ class TestExtractJsonldFacts:
         assert facts["price"] == 1950.0
         assert facts["name"] == "Lenovo IdeaPad 5"
 
-    # ── Offers shapes ──────────────────────────────────────────────────────────
+    # Offers shapes
 
     def test_offers_as_list(self):
         html = """<script type="application/ld+json">
@@ -65,7 +65,7 @@ class TestExtractJsonldFacts:
         assert facts["price"] == 3299.0
         assert facts["currency"] == "RON"
 
-    # ── Price string formats ───────────────────────────────────────────────────
+    # Price string formats
 
     def test_price_with_space_and_comma(self):
         """Romanian format: "1 799,00" → 1799.0"""
@@ -84,7 +84,7 @@ class TestExtractJsonldFacts:
         facts = extract_jsonld_facts(html)
         assert facts["price"] == 149.0
 
-    # ── Availability variants ─────────────────────────────────────────────────
+    # Availability variants
 
     def test_out_of_stock_schema_url(self):
         html = """<script type="application/ld+json">
@@ -104,7 +104,7 @@ class TestExtractJsonldFacts:
         facts = extract_jsonld_facts(html)
         assert facts["availability"] == "Pre-order"
 
-    # ── Sources ────────────────────────────────────────────────────────────────
+    # Sources
 
     def test_markdown_code_block(self):
         md = '''Some text above.
@@ -139,7 +139,7 @@ Some text below.'''
         </script>"""
         assert extract_jsonld_facts(html) == {}
 
-    # ── Microdata fallback ────────────────────────────────────────────────────
+    # Microdata fallback
 
     def test_microdata_itemprop_rating_with_review_count(self):
         """Pages with Schema.org microdata but no JSON-LD should return a rating."""
@@ -180,7 +180,7 @@ Some text below.'''
         facts = extract_jsonld_facts(html)
         assert "rating" not in facts
 
-    # ── build_facts_header ────────────────────────────────────────────────────
+    # build_facts_header
 
     def test_build_facts_header_with_all_fields(self):
         jsonld = {

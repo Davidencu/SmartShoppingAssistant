@@ -39,7 +39,7 @@ _TIMEOUT = 30
 _IMPERSONATE = "chrome124"
 
 
-# ─── Priority levels ────────────────────────────────────────────────────────────
+# Priority levels
 
 class Priority(IntEnum):
     P1_USER_REQUEST  = 1   # Direct user search — no delay, immediate processing
@@ -60,7 +60,7 @@ _PRIORITY_DELAYS: dict[int, float] = {
 }
 
 
-# ─── Bloom Filter ───────────────────────────────────────────────────────────────
+# Bloom Filter
 
 class BloomFilter:
     """
@@ -83,7 +83,7 @@ class BloomFilter:
         self._hash_count: int = max(1, int(self._size / capacity * math.log(2)))
         self._bits = bytearray(self._size // 8 + 1)
 
-    # ── internal helpers ──────────────────────────────────────────────────────
+    # internal helpers
 
     def _positions(self, item: str) -> list[int]:
         encoded = item.encode()
@@ -91,7 +91,7 @@ class BloomFilter:
         h2 = int.from_bytes(hashlib.sha1(encoded).digest(), "little")  # noqa: S324
         return [(h1 + i * h2) % self._size for i in range(self._hash_count)]
 
-    # ── public API ────────────────────────────────────────────────────────────
+    # public API
 
     def add(self, item: str) -> None:
         for pos in self._positions(item):
@@ -111,7 +111,7 @@ class BloomFilter:
         return int(-self._size / self._hash_count * math.log(1.0 - ratio))
 
 
-# ─── URL result LRU cache ───────────────────────────────────────────────────────
+# URL result LRU cache
 
 class _LRUCache:
     """
@@ -143,7 +143,7 @@ class _LRUCache:
         return len(self._store)
 
 
-# ─── Module-level singletons ────────────────────────────────────────────────────
+# Module-level singletons
 
 # Bloom filter: ~120 KB covering 100k URLs, ~1% false-positive rate
 _scraped_bloom = BloomFilter(capacity=100_000, error_rate=0.01)
@@ -197,7 +197,7 @@ def _find_policy_links(html: str, base_url: str) -> tuple[str | None, str | None
     return shipping_url, return_url
 
 
-# ─── Scraper core (synchronous, runs in thread pool) ────────────────────────────
+# Scraper core (synchronous, runs in thread pool)
 
 def _fetch_one_sync(url: str) -> dict:
     """
@@ -226,7 +226,7 @@ def _fetch_one_sync(url: str) -> dict:
     jsonld = {**extract_bs4_facts(html), **extract_jsonld_facts(html)}
     markdown = trafilatura.extract(html, include_tables=True, include_links=False) or ""
 
-    # ── Two-hop: find shipping + return policy pages once per domain ─────────
+    # Two-hop: find shipping + return policy pages once per domain
     domain = _extract_domain(url)
     if domain not in _policy_cache:
         shipping_url, return_url = _find_policy_links(html, url)
@@ -255,7 +255,7 @@ def _fetch_one_sync(url: str) -> dict:
     }
 
 
-# ─── Priority-queue scrape scheduler ───────────────────────────────────────────
+# Priority-queue scrape scheduler
 
 class ScraperScheduler:
     """
@@ -280,7 +280,7 @@ class ScraperScheduler:
         self._num_workers = num_workers
         self._started = False
 
-    # ── Lazy startup (requires a running event loop) ─────────────────────────
+    # Lazy startup (requires a running event loop)
 
     async def _ensure_started(self) -> None:
         # No await between check and set — safe from asyncio re-entrancy
@@ -290,7 +290,7 @@ class ScraperScheduler:
         for _ in range(self._num_workers):
             asyncio.create_task(self._worker())
 
-    # ── Worker loop ──────────────────────────────────────────────────────────
+    # Worker loop
 
     async def _worker(self) -> None:
         loop = asyncio.get_event_loop()
@@ -332,7 +332,7 @@ class ScraperScheduler:
             finally:
                 self._queue.task_done()
 
-    # ── Public API ────────────────────────────────────────────────────────────
+    # Public API
 
     async def submit(self, url: str, priority: int) -> asyncio.Future:
         """
@@ -380,7 +380,7 @@ def clear_memory_cache() -> dict:
     return {"lru_entries_evicted": evicted}
 
 
-# ─── Public API ────────────────────────────────────────────────────────────────
+# Public API
 
 async def scrape_urls(
     urls: list[str],

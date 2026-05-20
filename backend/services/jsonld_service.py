@@ -231,7 +231,7 @@ def extract_bs4_facts(html: str) -> dict:
         logger.debug("[BS4] parse error: %s", exc)
         return facts
 
-    # ── helpers ──────────────────────────────────────────────────────────────
+    # helpers
 
     def _meta_content(*props: str, by_name: bool = False) -> str:
         key = "name" if by_name else "property"
@@ -263,7 +263,7 @@ def extract_bs4_facts(html: str) -> dict:
             return "Pre-order"
         return None
 
-    # ── 1. Open Graph / Product-namespace meta tags ───────────────────────────
+    # 1. Open Graph / Product-namespace meta tags
 
     if "price" not in facts:
         raw = _meta_content("og:price:amount", "product:price:amount")
@@ -308,7 +308,7 @@ def extract_bs4_facts(html: str) -> dict:
         if raw:
             facts["seller"] = raw
 
-    # ── 2. Schema.org itemprop (content= attribute takes priority over text) ──
+    # 2. Schema.org itemprop (content= attribute takes priority over text)
 
     if "price" not in facts:
         tag = soup.find(attrs={"itemprop": "price"})
@@ -356,7 +356,7 @@ def extract_bs4_facts(html: str) -> dict:
                     _rc = raw
                     break
 
-    # ── 3. aria-label star ratings ────────────────────────────────────────────
+    # 3. aria-label star ratings
 
     if _rv is None:
         for el in soup.find_all(attrs={"aria-label": True}):
@@ -382,7 +382,7 @@ def extract_bs4_facts(html: str) -> dict:
                 except ValueError:
                     pass
 
-    # ── 4. data-* price attributes (GTM / GA tracking payloads) ──────────────
+    # 4. data-* price attributes (GTM / GA tracking payloads)
 
     if "price" not in facts:
         for attr in ("data-price", "data-product-price", "data-price-amount",
@@ -394,7 +394,7 @@ def extract_bs4_facts(html: str) -> dict:
                     facts["price"] = v
                     break
 
-    # ── Assemble rating string ────────────────────────────────────────────────
+    # Assemble rating string
 
     if _rv is not None and "rating" not in facts:
         rating_str = f"{_rv}/5"

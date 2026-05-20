@@ -32,9 +32,7 @@ describe("Login flow — sequences", () => {
     mockReplace.mockClear();
   });
 
-  // -----------------------------------------------------------------------
   // Sequence A – New user: email not found → redirect to /register
-  // -----------------------------------------------------------------------
   it("Seq A: unknown email → redirects to /register with email in sessionStorage", async () => {
     jest.mocked(api.checkEmail).mockResolvedValue({ exists: false });
     const setItem = jest.spyOn(Storage.prototype, "setItem");
@@ -52,9 +50,7 @@ describe("Login flow — sequences", () => {
     setItem.mockRestore();
   });
 
-  // -----------------------------------------------------------------------
   // Sequence B – Returning user: full happy path → dashboard
-  // -----------------------------------------------------------------------
   it("Seq B: known email → challenge → biometric → token stored → /dashboard", async () => {
     jest.mocked(api.checkEmail).mockResolvedValue({ exists: true });
     jest.mocked(api.getPasskeyChallenge).mockResolvedValue({ options: { rpId: "localhost" } });
@@ -78,9 +74,7 @@ describe("Login flow — sequences", () => {
     setItem.mockRestore();
   });
 
-  // -----------------------------------------------------------------------
   // Sequence C – Network error during checkEmail → error shown, email step
-  // -----------------------------------------------------------------------
   it("Seq C: checkEmail network error → shows error, stays on email form", async () => {
     jest.mocked(api.checkEmail).mockRejectedValue(new Error("Network error"));
 
@@ -95,9 +89,7 @@ describe("Login flow — sequences", () => {
     expect(mockPush).not.toHaveBeenCalled();
   });
 
-  // -----------------------------------------------------------------------
   // Sequence D – No passkey registered → challenge fails → error, email step
-  // -----------------------------------------------------------------------
   it("Seq D: passkey challenge fails (no passkey registered) → shows error", async () => {
     jest.mocked(api.checkEmail).mockResolvedValue({ exists: true });
     jest.mocked(api.getPasskeyChallenge).mockRejectedValue(
@@ -115,9 +107,7 @@ describe("Login flow — sequences", () => {
     expect(mockPush).not.toHaveBeenCalled();
   });
 
-  // -----------------------------------------------------------------------
   // Sequence E – User cancels biometric → error shown, back to email step
-  // -----------------------------------------------------------------------
   it("Seq E: user cancels biometric prompt → shows error, back to email form", async () => {
     jest.mocked(api.checkEmail).mockResolvedValue({ exists: true });
     jest.mocked(api.getPasskeyChallenge).mockResolvedValue({ options: {} });
@@ -136,9 +126,7 @@ describe("Login flow — sequences", () => {
     expect(mockPush).not.toHaveBeenCalled();
   });
 
-  // -----------------------------------------------------------------------
   // Sequence F – Credential rejected by server → error, back to email step
-  // -----------------------------------------------------------------------
   it("Seq F: server rejects credential → shows error, back to email form", async () => {
     jest.mocked(api.checkEmail).mockResolvedValue({ exists: true });
     jest.mocked(api.getPasskeyChallenge).mockResolvedValue({ options: {} });
@@ -158,9 +146,7 @@ describe("Login flow — sequences", () => {
     expect(mockPush).not.toHaveBeenCalled();
   });
 
-  // -----------------------------------------------------------------------
   // Sequence G – First attempt fails, user retries and succeeds
-  // -----------------------------------------------------------------------
   it("Seq G: first biometric fails, user resubmits, second attempt succeeds → /dashboard", async () => {
     // First attempt: biometric fails
     jest.mocked(api.checkEmail).mockResolvedValue({ exists: true });
@@ -192,9 +178,7 @@ describe("Login flow — sequences", () => {
     setItem.mockRestore();
   });
 
-  // -----------------------------------------------------------------------
   // Sequence H – Empty email validation prevents API calls
-  // -----------------------------------------------------------------------
   it("Seq H: empty submit never calls checkEmail", async () => {
     render(<LoginForm />);
     submitEmail();
@@ -205,9 +189,7 @@ describe("Login flow — sequences", () => {
     expect(api.checkEmail).not.toHaveBeenCalled();
   });
 
-  // -----------------------------------------------------------------------
   // Sequence I – Invalid email format validation prevents API calls
-  // -----------------------------------------------------------------------
   it("Seq I: malformed email never calls checkEmail", async () => {
     render(<LoginForm />);
     await fillEmail("notanemail");

@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, MagicMock
 CHAT_URL = "/search/chat"
 
 
-# ─── Score helpers ────────────────────────────────────────────────────────────
+# Score helpers
 
 def _value_score(cost_eff, quality, logistics, trust) -> float:
     from services.gemini_service import SCORE_WEIGHTS
@@ -104,7 +104,7 @@ def _clarify_intent(reply, collected=None):
     }
 
 
-# ─── 1. Score-weight unit tests ────────────────────────────────────────────────
+# 1. Score-weight unit tests
 
 class TestScoreWeights:
     def test_weights_sum_to_one(self):
@@ -138,7 +138,7 @@ class TestScoreWeights:
         assert over_budget < in_budget
 
 
-# ─── 2. Under-budget product scoring ─────────────────────────────────────────
+# 2. Under-budget product scoring
 
 class TestUnderBudgetProductScoring:
     """
@@ -255,7 +255,7 @@ class TestUnderBudgetProductScoring:
         assert s["quality_confidence"] == 0.0
 
 
-# ─── 3. Common product search requests ────────────────────────────────────────
+# 3. Common product search requests
 
 class TestCommonProductRequests:
     """
@@ -406,7 +406,7 @@ class TestCommonProductRequests:
         assert len(data["products"]) == 3
 
 
-# ─── 4. Ambiguous requests that should trigger CLARIFY ────────────────────────
+# 4. Ambiguous requests that should trigger CLARIFY
 
 class TestAmbiguousRequestsTriggerClarify:
 
@@ -516,7 +516,7 @@ class TestAmbiguousRequestsTriggerClarify:
         tavily.assert_not_called()
 
 
-# ─── 5. No-preference handling ────────────────────────────────────────────────
+# 5. No-preference handling
 
 class TestNoPreferenceHandling:
     """
@@ -567,7 +567,7 @@ class TestNoPreferenceHandling:
         assert resp.json()["intent"] == "SEARCH"
 
 
-# ─── 6. Multi-turn conversations ──────────────────────────────────────────────
+# 6. Multi-turn conversations
 
 class TestMultiTurnConversation:
 
@@ -701,7 +701,7 @@ class TestMultiTurnConversation:
         assert data["collected_params"]["budget_max"] == 2000.0
 
 
-# ─── 7. Location read from Supabase ───────────────────────────────────────────
+# 7. Location read from Supabase
 
 class TestLocationFromSupabase:
 

@@ -77,7 +77,7 @@ describe("Registration flow — sequences", () => {
     });
   });
 
-  // ── Seq A: RegisterForm → OTP sent → navigate to /verify ─────────────────
+  // Seq A: RegisterForm → OTP sent → navigate to /verify
 
   it("Seq A: valid form submission calls sendOtp with correct data", async () => {
     jest.mocked(api.sendOtp).mockResolvedValue({ message: "OTP sent" });
@@ -137,7 +137,7 @@ describe("Registration flow — sequences", () => {
     });
   });
 
-  // ── Seq B: Email already registered → 409 UX ─────────────────────────────
+  // Seq B: Email already registered → 409 UX
 
   it("Seq B: sendOtp 409 → shows 'already registered' message", async () => {
     const { ApiError } = jest.requireActual("@/lib/api");
@@ -197,7 +197,7 @@ describe("Registration flow — sequences", () => {
     });
   });
 
-  // ── Seq C: Validation prevents submission ─────────────────────────────────
+  // Seq C: Validation prevents submission
 
   it("Seq C: empty form → shows validation errors, no API call", async () => {
     render(<RegisterForm />);
@@ -222,7 +222,7 @@ describe("Registration flow — sequences", () => {
     expect(api.sendOtp).not.toHaveBeenCalled();
   });
 
-  // ── Seq D: PasskeyEnrollment reads sessionStorage ──────────────────────────
+  // Seq D: PasskeyEnrollment reads sessionStorage
 
   it("Seq D: PasskeyEnrollment shows both biometric buttons when session data present", async () => {
     sessionStorage.setItem("pending_email", "alice@example.com");
@@ -242,7 +242,7 @@ describe("Registration flow — sequences", () => {
     });
   });
 
-  // ── Seq E: Face ID enrollment happy path → /plan ──────────────────────────
+  // Seq E: Face ID enrollment happy path → /plan
 
   it("Seq E: Face ID success → stores token in localStorage", async () => {
     sessionStorage.setItem("pending_email", "alice@example.com");
@@ -291,7 +291,7 @@ describe("Registration flow — sequences", () => {
     expect(sessionStorage.getItem("pending_email")).toBeNull();
   });
 
-  // ── Seq F: Touch ID enrollment happy path → /plan ─────────────────────────
+  // Seq F: Touch ID enrollment happy path → /plan
 
   it("Seq F: Touch ID success → stores token and redirects to /plan", async () => {
     sessionStorage.setItem("pending_email", "alice@example.com");
@@ -311,7 +311,7 @@ describe("Registration flow — sequences", () => {
     setItem.mockRestore();
   });
 
-  // ── Seq G: Enrollment failure → retry → success ───────────────────────────
+  // Seq G: Enrollment failure → retry → success
 
   it("Seq G: Face ID fails → shows error, buttons re-enabled", async () => {
     sessionStorage.setItem("pending_email", "alice@example.com");
@@ -365,7 +365,7 @@ describe("Registration flow — sequences", () => {
     expect(mockPush).not.toHaveBeenCalled();
   });
 
-  // ── Seq H: PlanSelection reads localStorage token ─────────────────────────
+  // Seq H: PlanSelection reads localStorage token
 
   it("Seq H: PlanSelection with no token → still renders buttons (calls API with empty string)", async () => {
     localStorage.removeItem("smartshop_token");
@@ -387,7 +387,7 @@ describe("Registration flow — sequences", () => {
     });
   });
 
-  // ── Seq I: Full component chain: enroll → free plan → /dashboard ──────────
+  // Seq I: Full component chain: enroll → free plan → /dashboard
 
   it("Seq I: full chain — enroll (Face ID) → selectFreePlan → /dashboard", async () => {
     // Step 1: PasskeyEnrollment

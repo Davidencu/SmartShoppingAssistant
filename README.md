@@ -371,9 +371,7 @@ Gemini is instructed to use these values directly for budget checks and scoring 
 
 ## Autonomous Logistics Discovery
 
-> **The problem in plain terms:** A product page never tells you the shipping cost — that only appears once you're logged in at checkout. Earlier versions of SmartShop had to hard-code shipping rules for a handful of known Romanian stores, which meant any boutique, foreign marketplace, or new retailer got a generic "shipping unknown" score.
->
-> **The fix:** SmartShop now reads the store's own shipping policy, exactly the way a human would — by scrolling to the footer and clicking the link.
+> **The core challenge:** A product page never tells you the shipping cost — that information only appears once you're logged in at checkout. SmartShop solves this the same way a human would: by scrolling to the footer and clicking the "Shipping Policy" link.
 
 ### How it works — the Two-Hop
 
@@ -427,7 +425,7 @@ The two-hop runs **once per domain per server session**, not once per product. I
 
 ### Works for every store on Earth
 
-Because the system reads the store's own policy page rather than looking up a pre-approved list, it works for any retailer in any language — a niche Japanese electronics shop, a boutique in Berlin, a sporting goods store in Poland. The only requirement is that the store has a publicly accessible shipping policy page, which virtually all legitimate retailers do.
+The system works for any retailer in any language — a niche Japanese electronics shop, a boutique in Berlin, a sporting goods store in Poland. The only requirement is that the store has a publicly accessible shipping policy page, which virtually all legitimate retailers do.
 
 ---
 

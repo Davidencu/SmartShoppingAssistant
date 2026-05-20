@@ -39,7 +39,7 @@ def _with_backoff(fn, *args, **kwargs):
             time.sleep(delay)
             delay *= 2
 
-# ─── Dynamic logistics helpers ────────────────────────────────────────────────
+# Dynamic logistics helpers
 
 class LogisticsData(BaseModel):
     ships_to_user: bool
@@ -174,7 +174,7 @@ def _format_dynamic_logistics_ctx(
     )
 
 
-# ─── Shopping System Prompt ────────────────────────────────────────────────────
+# Shopping System Prompt
 # Injected into every Gemini call. Defines ShopperAI's identity, intent system,
 # and the strict JSON contract it must honour. No fine-tuning needed.
 
@@ -366,7 +366,7 @@ any other value.
 }
 """
 
-# ─── Scoring weights ───────────────────────────────────────────────────────────
+# Scoring weights
 # cost_efficiency + quality_confidence together represent quality-price ratio (75%).
 SCORE_WEIGHTS = {
     "cost_efficiency": 0.40,
@@ -376,7 +376,7 @@ SCORE_WEIGHTS = {
 }
 
 
-# ─── Helpers ──────────────────────────────────────────────────────────────────
+# Helpers
 
 def _build_contents(messages) -> list[types.Content]:
     """Convert the full message list into Gemini Content objects."""
@@ -398,7 +398,7 @@ def _build_contents(messages) -> list[types.Content]:
     return contents
 
 
-# ─── Public API ───────────────────────────────────────────────────────────────
+# Public API
 
 def _location_block(city: str, country: str) -> str:
     """Build the location section appended to the system prompt when location is known."""
@@ -524,7 +524,7 @@ def score_and_rank_products(
     )
     location_str = ", ".join(filter(None, [city, country])) or "unknown"
 
-    # ── Geo-context blocks — swapped out for global searches ──────────────────
+    # Geo-context blocks — swapped out for global searches
     if is_global:
         currency_block = f"""\
 ## CURRENCY CONVERSION (GLOBAL SEARCH MODE)

@@ -105,7 +105,7 @@ export function createProCheckout(token: string) {
   return request<{ checkout_url: string }>("/plan/checkout", { method: "POST" }, token);
 }
 
-// ─── Search / Chat ────────────────────────────────────────────────────────────
+// Search / Chat
 
 export interface ChatMessage {
   role: "user" | "assistant";

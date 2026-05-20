@@ -1,6 +1,6 @@
 import { compressImage } from "@/lib/imageCompressor";
 
-// ─── Canvas / Image mocks ─────────────────────────────────────────────────────
+// Canvas / Image mocks
 
 const mockDrawImage = jest.fn();
 const mockToDataURL = jest.fn(() => "data:image/webp;base64,Y29tcHJlc3NlZA==");
@@ -47,7 +47,7 @@ afterEach(() => {
   jest.restoreAllMocks();
 });
 
-// ─── Tests ────────────────────────────────────────────────────────────────────
+// Tests
 
 describe("compressImage", () => {
   const makeFile = (name = "photo.jpg", type = "image/jpeg") =>

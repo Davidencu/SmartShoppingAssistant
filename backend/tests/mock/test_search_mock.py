@@ -60,7 +60,7 @@ _SAMPLE_PRODUCTS = [
 ]
 
 
-# ─── Authentication ────────────────────────────────────────────────────────────
+# Authentication
 
 class TestAuthentication:
     def test_unauthenticated_returns_401(self, client):
@@ -76,7 +76,7 @@ class TestAuthentication:
         assert resp.status_code == 422
 
 
-# ─── CHAT Intent ──────────────────────────────────────────────────────────────
+# CHAT Intent
 
 class TestChatIntent:
     def test_chat_returns_reply_without_calling_tavily(
@@ -127,7 +127,7 @@ class TestChatIntent:
         assert resp.json()["reply"] is not None
 
 
-# ─── CLARIFY Intent ───────────────────────────────────────────────────────────
+# CLARIFY Intent
 
 class TestClarifyIntent:
     def test_clarify_asks_for_missing_parameter(
@@ -165,7 +165,7 @@ class TestClarifyIntent:
         mock_tavily.assert_not_called()
 
 
-# ─── SEARCH Pipeline ──────────────────────────────────────────────────────────
+# SEARCH Pipeline
 
 class TestSearchPipeline:
     def _mock_search_intent(self, mocker):
@@ -365,7 +365,7 @@ class TestSearchPipeline:
         assert resp.status_code == 200
 
 
-# ─── Product Structure ────────────────────────────────────────────────────────
+# Product Structure
 
 class TestProductStructure:
     def test_scoring_empty_triggers_clarify(
@@ -465,7 +465,7 @@ class TestProductStructure:
         assert abs(p["value_score"] - expected) < 5  # allow pre-cached rounding
 
 
-# ─── Excluded URLs ─────────────────────────────────────────────────────────────
+# Excluded URLs
 
 _RICH_MARKDOWN = (
     "# ASUS VivoBook 16\n\n"
@@ -606,7 +606,7 @@ class TestExcludedUrls:
         assert resp.status_code == 503
 
 
-# ─── No-results CLARIFY ────────────────────────────────────────────────────────
+# No-results CLARIFY
 
 class TestNoResultsClarify:
     """When scoring finds nothing globally, a CLARIFY response is returned (not 503)."""
@@ -706,7 +706,7 @@ class TestNoResultsClarify:
         assert isinstance(reply, str) and len(reply) > 10
 
 
-# ─── Global Fallback ───────────────────────────────────────────────────────────
+# Global Fallback
 
 _LOCAL_TAVILY = [
     {"url": "https://emag.ro/product-a", "title": "Product A"},
