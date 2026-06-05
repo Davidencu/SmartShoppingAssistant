@@ -7,15 +7,13 @@ SmartShop is an autonomous AI concierge. Users search for products via a natural
 *   **Frontend:** Next.js (App Router, TailwindCSS)
 *   **Backend:** FastAPI (Python 3.12+)
 *   **Database:** Supabase (PostgreSQL)
-*   **Automation:** Stagehand (AI-driven browser automation)
-*   **AI/LLM:** Gemini (Intent, Scoring, Logic), Tavily & Jina (Search/Scraping)
+*   **AI/LLM:** Gemini (Intent, Scoring, Logic), Tavily (Search/Discovery)
 *   **Authentication:** WebAuthn / Passkeys (Biometric)
 *   **Billing (MoR):** Lemon Squeezy (Handles global taxes/compliance)
 
 ## 3. Strict Architectural Rules
-*   **The "No PCI-DSS" Rule:** Card numbers are NEVER stored in the DB. They move from Next.js -> FastAPI RAM -> Stagehand -> Purge. Use HTML5 `autocomplete` to trigger OS-level biometric (Face ID/Touch ID) autofill for the user.
-*   **The "Concierge" Rule:** Shipping address, phone, and name ARE stored in Supabase. This allows Stagehand to act as a concierge, filling the "boring" forms automatically while the user only provides the card.
-*   **The "Agentic" Rule:** No brittle Playwright locators. Use `page.act()` for all e-commerce interactions.
+*   **The "No PCI-DSS" Rule:** Card numbers are NEVER stored in the DB. They move from Next.js -> FastAPI RAM -> checkout automation -> Purge. Use HTML5 `autocomplete` to trigger OS-level biometric (Face ID/Touch ID) autofill for the user.
+*   **The "Concierge" Rule:** Shipping address, phone, and name ARE stored in Supabase for checkout auto-fill. The user only provides the card at purchase time.
 *   **The "Zero Ledger" Rule:** No internal wallets or top-ups. We do not hold user funds. We only charge for the SaaS subscription ($9.99/mo).
 
 ## 4. Database Schema (Supabase)
@@ -39,9 +37,9 @@ SmartShop is an autonomous AI concierge. Users search for products via a natural
     *   If **Pro/Credits > 0**: User clicks "Buy" -> Triggers Ephemeral Card Form.
     *   If **Free/Credits == 0**: User sees "Unlock Auto-Checkout" or an Affiliate Link.
 5.  **Ephemeral Intake:** User taps card input; OS triggers **Face ID**; form autofills. Card details sent to FastAPI.
-6.  **Execution (Stagehand):** 
+6.  **Execution (Checkout Automation):** 
     *   FastAPI fetches address from DB + Card from RAM.
-    *   Stagehand navigates, adds to cart, fills address, inputs card, clicks pay.
+    *   Browser automation navigates, adds to cart, fills address, inputs card, clicks pay.
 7.  **Pivot/Teardown:**
     *   If **Sold Out**: AI suggests the 2nd best item (State Pivot).
     *   If **Success/Fail**: FastAPI **violently deletes card from RAM** and reports to UI.

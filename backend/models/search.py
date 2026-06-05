@@ -23,10 +23,10 @@ class IntentParams(BaseModel):
 
 
 class ProductScores(BaseModel):
-    cost_efficiency: float    # 35% weight
-    quality_confidence: float  # 30% weight
-    logistics: float           # 20% weight
-    trust: float               # 15% weight
+    cost_efficiency: float     # 40% weight
+    quality_confidence: float  # 35% weight
+    logistics: float           # 15% weight
+    trust: float               # 10% weight
 
 
 class Product(BaseModel):

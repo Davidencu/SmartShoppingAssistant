@@ -1,0 +1,7 @@
+name = "smartshop-proxy-1"
+main = "src/worker.js"
+compatibility_date = "2024-09-23"
+
+# Deploy with `wrangler deploy` or use deploy-swarm.sh for multiple workers.
+# Set the secret before deploying:
+#   wrangler secret put WORKER_SECRET --name smartshop-proxy-1

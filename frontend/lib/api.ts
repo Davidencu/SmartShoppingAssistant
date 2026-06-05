@@ -162,20 +162,68 @@ export function getHistory(token: string) {
   return request<{ entries: HistoryEntry[] }>("/search/history", {}, token);
 }
 
-export function sendChatMessage(
+export async function sendChatMessage(
   messages: ChatMessage[],
   token: string,
   excludedUrls?: string[],
-) {
-  return request<ChatResponse>(
-    "/search/chat",
-    {
-      method: "POST",
-      body: JSON.stringify({
-        messages,
-        ...(excludedUrls && excludedUrls.length > 0 ? { excluded_urls: excludedUrls } : {}),
-      }),
+  onStatus?: (message: string) => void,
+): Promise<ChatResponse> {
+  const res = await fetch(`${API_BASE}/search/chat`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
     },
-    token
-  );
+    body: JSON.stringify({
+      messages,
+      ...(excludedUrls && excludedUrls.length > 0 ? { excluded_urls: excludedUrls } : {}),
+    }),
+  });
+
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new ApiError(
+      (body as { detail?: string }).detail ?? `Request failed: ${res.status}`,
+      res.status
+    );
+  }
+
+  // The backend streams SSE events: `data: {...}\n\n`
+  // We read the stream line-by-line and react to each event type.
+  const reader = res.body!.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+
+    // Process every complete line in the accumulated buffer.
+    let newlineIdx: number;
+    while ((newlineIdx = buffer.indexOf("\n")) !== -1) {
+      const line = buffer.slice(0, newlineIdx).trimEnd();
+      buffer = buffer.slice(newlineIdx + 1);
+
+      if (!line.startsWith("data: ")) continue;
+
+      const event = JSON.parse(line.slice(6)) as {
+        type: "status" | "result" | "error";
+        message?: string;
+        data?: ChatResponse;
+      };
+
+      if (event.type === "status") {
+        onStatus?.(event.message ?? "");
+      } else if (event.type === "result" && event.data) {
+        reader.cancel();
+        return event.data;
+      } else if (event.type === "error") {
+        throw new ApiError(event.message ?? "Pipeline error", 500);
+      }
+    }
+  }
+
+  throw new ApiError("Stream ended without a result", 500);
 }

@@ -41,9 +41,7 @@ def reset_store_id():
 REG = {
     "email": "alice@example.com",
     "phone": "+40712345678",
-    "street_address": "10 Main St",
     "city": "Bucharest",
-    "postal_code": "010101",
     "country": "Romania",
 }
 
@@ -108,8 +106,8 @@ class TestFullRegistrationToFreePlan:
     def test_seq_A_verify_magic_stashes_user_id_no_db_write(self, client, mock_supabase, mocker):
         import routers.auth as m
         m._registration_data["alice@example.com"] = {
-            "phone": "+40712345678", "street_address": "10 Main St",
-            "city": "Bucharest", "postal_code": "010101", "country": "Romania",
+            "phone": "+40712345678",
+            "city": "Bucharest", "state": None, "country": "Romania",
         }
         _patch_magic_link(mocker, "user-uuid-a", "alice@example.com")
         resp = client.post("/auth/verify-magic", json={"access_token": "tok"})
@@ -126,8 +124,8 @@ class TestFullRegistrationToFreePlan:
         m._challenges["alice@example.com"] = b"challenge"
         m._registration_data["alice@example.com"] = {
             "user_id": "user-uuid-a",
-            "phone": "+40712345678", "street_address": "10 Main St",
-            "city": "Bucharest", "postal_code": "010101", "country": "Romania",
+            "phone": "+40712345678",
+            "city": "Bucharest", "state": None, "country": "Romania",
         }
         mock_supabase.table.return_value.insert.return_value.execute.return_value = MagicMock()
         _patch_passkey_verification(mocker)
@@ -294,8 +292,8 @@ class TestVerifyMagicEdgeCases:
     def test_verify_magic_challenge_generated_for_next_step(self, client, mocker):
         import routers.auth as m
         m._registration_data["alice@example.com"] = {
-            "phone": "+40712345678", "street_address": "10 St",
-            "city": "Bucharest", "postal_code": "010101", "country": "Romania",
+            "phone": "+40712345678",
+            "city": "Bucharest", "state": None, "country": "Romania",
         }
         _patch_magic_link(mocker, "user-uuid-v", "alice@example.com")
         client.post("/auth/verify-magic", json={"access_token": "tok"})
@@ -313,8 +311,7 @@ class TestPasskeyRegisterErrorCases:
         m._challenges["alice@example.com"] = b"challenge"
         m._registration_data["alice@example.com"] = {
             "user_id": "uid", "phone": "+40712345678",
-            "street_address": "10 St", "city": "Bucharest",
-            "postal_code": "010101", "country": "Romania",
+            "city": "Bucharest", "state": None, "country": "Romania",
         }
         mocker.patch("routers.auth.verify_registration_response", side_effect=Exception("bad cred"))
         resp = client.post(
@@ -329,8 +326,7 @@ class TestPasskeyRegisterErrorCases:
         m._challenges["alice@example.com"] = b"challenge"
         m._registration_data["alice@example.com"] = {
             "user_id": "uid", "phone": "+40712345678",
-            "street_address": "10 St", "city": "Bucharest",
-            "postal_code": "010101", "country": "Romania",
+            "city": "Bucharest", "state": None, "country": "Romania",
         }
         mock_supabase.table.return_value.insert.return_value.execute.return_value = MagicMock()
         _patch_passkey_verification(mocker)
@@ -351,8 +347,8 @@ class TestPasskeyRegisterErrorCases:
         m._challenges["alice@example.com"] = b"challenge"
         m._registration_data["alice@example.com"] = {
             # user_id intentionally absent — verify-magic never called
-            "phone": "+40712345678", "street_address": "10 St",
-            "city": "Bucharest", "postal_code": "010101", "country": "Romania",
+            "phone": "+40712345678",
+            "city": "Bucharest", "state": None, "country": "Romania",
         }
         resp = client.post(
             "/auth/passkey/register",
@@ -371,8 +367,7 @@ class TestJwtIntegrity:
         m._challenges["alice@example.com"] = b"challenge"
         m._registration_data["alice@example.com"] = {
             "user_id": "correct-uuid", "phone": "+40712345678",
-            "street_address": "10 St", "city": "Bucharest",
-            "postal_code": "010101", "country": "Romania",
+            "city": "Bucharest", "state": None, "country": "Romania",
         }
         mock_supabase.table.return_value.insert.return_value.execute.return_value = MagicMock()
         _patch_passkey_verification(mocker)
@@ -392,8 +387,7 @@ class TestJwtIntegrity:
         m._challenges["alice@example.com"] = b"challenge"
         m._registration_data["alice@example.com"] = {
             "user_id": "uid-plan", "phone": "+40712345678",
-            "street_address": "10 St", "city": "Bucharest",
-            "postal_code": "010101", "country": "Romania",
+            "city": "Bucharest", "state": None, "country": "Romania",
         }
         mock_supabase.table.return_value.insert.return_value.execute.return_value = MagicMock()
         _patch_passkey_verification(mocker)
@@ -445,11 +439,11 @@ class TestConcurrentRegistrations:
         _no_profile(mock_supabase)
         _patch_otp_send(mocker)
 
-        client.post("/auth/send-otp", json={**REG, "street_address": "Old St 1"})
-        assert m._registration_data["alice@example.com"]["street_address"] == "Old St 1"
+        client.post("/auth/send-otp", json={**REG, "city": "Old City"})
+        assert m._registration_data["alice@example.com"]["city"] == "Old City"
 
-        client.post("/auth/send-otp", json={**REG, "street_address": "New St 99"})
-        assert m._registration_data["alice@example.com"]["street_address"] == "New St 99"
+        client.post("/auth/send-otp", json={**REG, "city": "New City"})
+        assert m._registration_data["alice@example.com"]["city"] == "New City"
 
 
 # Plan endpoint integration

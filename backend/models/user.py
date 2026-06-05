@@ -18,10 +18,8 @@ class EmailCheckRequest(BaseModel):
 class OTPRequest(BaseModel):
     email: str
     phone: str
-    street_address: str
     city: str
     state: Optional[str] = None
-    postal_code: str
     country: str
 
     @field_validator("email")

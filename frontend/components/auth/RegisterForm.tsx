@@ -32,19 +32,15 @@ interface FormState {
   email: string;
   phone: string;
   countryCode: string;
-  street_address: string;
   city: string;
   state: string;
-  postal_code: string;
   country: string;
 }
 
 interface Errors {
   email?: string;
   phone?: string;
-  street_address?: string;
   city?: string;
-  postal_code?: string;
   country?: string;
 }
 
@@ -62,10 +58,8 @@ export default function RegisterForm() {
     email: prefilled,
     phone: "",
     countryCode: "+40",
-    street_address: "",
     city: "",
     state: "",
-    postal_code: "",
     country: "",
   });
   const [errors, setErrors] = useState<Errors>({});
@@ -79,9 +73,7 @@ export default function RegisterForm() {
       e.email = "Enter a valid email address (user@domain.com)";
     if (!form.phone.trim() || !/^\d{6,14}$/.test(form.phone.trim()))
       e.phone = "Enter 6–14 digits (without country code)";
-    if (!form.street_address.trim()) e.street_address = "Street address is required";
     if (!form.city.trim()) e.city = "City is required";
-    if (!form.postal_code.trim()) e.postal_code = "Postal code is required";
     if (!form.country.trim()) e.country = "Country is required";
     return e;
   };
@@ -108,10 +100,8 @@ export default function RegisterForm() {
     const email = form.email.trim().toLowerCase();
     const pendingData = {
       phone: `${form.countryCode}${form.phone.trim()}`,
-      street_address: form.street_address.trim(),
       city: form.city.trim(),
       state: form.state.trim() || undefined,
-      postal_code: form.postal_code.trim(),
       country: form.country.trim(),
     };
     try {
@@ -199,23 +189,6 @@ export default function RegisterForm() {
           )}
         </div>
 
-        {/* Street address */}
-        <div>
-          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-            Street address
-          </label>
-          <input
-            type="text"
-            value={form.street_address}
-            onChange={setField("street_address")}
-            placeholder="123 Main St"
-            className={inputClass(!!errors.street_address)}
-          />
-          {errors.street_address && (
-            <p className="text-red-500 text-xs mt-1">{errors.street_address}</p>
-          )}
-        </div>
-
         {/* City */}
         <div>
           <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">City</label>
@@ -241,26 +214,9 @@ export default function RegisterForm() {
             type="text"
             value={form.state}
             onChange={setField("state")}
-            placeholder="e.g. California"
+            placeholder="e.g. Ilfov"
             className="w-full border border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white dark:placeholder-gray-400 rounded-lg px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-indigo-400"
           />
-        </div>
-
-        {/* Postal code */}
-        <div>
-          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-            Postal code
-          </label>
-          <input
-            type="text"
-            value={form.postal_code}
-            onChange={setField("postal_code")}
-            placeholder="010101"
-            className={inputClass(!!errors.postal_code)}
-          />
-          {errors.postal_code && (
-            <p className="text-red-500 text-xs mt-1">{errors.postal_code}</p>
-          )}
         </div>
 
         {/* Country */}

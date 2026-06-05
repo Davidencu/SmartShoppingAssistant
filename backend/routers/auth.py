@@ -90,10 +90,8 @@ async def send_otp(req: OTPRequest):
 
     _registration_data[req.email] = {
         "phone": req.phone,
-        "street_address": req.street_address,
         "city": req.city,
         "state": req.state,
-        "postal_code": req.postal_code,
         "country": req.country,
     }
 
@@ -142,10 +140,8 @@ async def verify_otp(req: OTPVerifyRequest):
             "id": user_id,
             "email": req.email,
             "phone": reg["phone"],
-            "street_address": reg["street_address"],
             "city": reg["city"],
             "state": reg.get("state"),
-            "postal_code": reg["postal_code"],
             "country": reg["country"],
         }
     ).execute()
@@ -198,10 +194,8 @@ async def passkey_register(req: PasskeyRegisterRequest):
             "id": user_id,
             "email": req.email,
             "phone": reg["phone"],
-            "street_address": reg["street_address"],
             "city": reg["city"],
             "state": reg.get("state"),
-            "postal_code": reg["postal_code"],
             "country": reg["country"],
         }
     ).execute()

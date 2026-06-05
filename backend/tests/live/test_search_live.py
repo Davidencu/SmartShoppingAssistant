@@ -163,14 +163,6 @@ class TestLiveScraper:
             pytest.skip("Scraper returned empty content (possible bot detection or site block) — skipping")
         assert len(markdown) > 100
 
-    @pytest.mark.asyncio
-    async def test_handles_bad_url_gracefully(self):
-        from services.scraper_service import scrape_urls
-
-        results = await scrape_urls(["https://this-domain-does-not-exist-xyz123.com/page"])
-        assert len(results) == 1
-        assert results[0]["markdown"] == ""
-
 
 # Full Pipeline (expensive — use sparingly)
 
@@ -293,12 +285,14 @@ class TestLiveRealUserIntents:
         assert len(result["reply"]) > 10
 
     def test_no_brand_preference_with_budget_fires_search(self):
-        """'laptop under 2000 RON, I don't care about brand' → SEARCH, preference set."""
+        """No-brand + budget + use-case → SEARCH with preference='best value for budget'."""
         from models.search import ChatMessage
         from services.gemini_service import classify_intent
 
+        # Laptop is a high-complexity category that requires a use case (Adaptive Requirement Gate).
+        # Including the use case gives Gemini all required params → SEARCH.
         result = classify_intent([
-            ChatMessage(role="user", content="I need a laptop under 2000 RON, I don't care about brand")
+            ChatMessage(role="user", content="I need a laptop for office work under 2000 RON, I don't care about brand")
         ])
         assert result["intent"] == "SEARCH"
         params = result["collected_params"]

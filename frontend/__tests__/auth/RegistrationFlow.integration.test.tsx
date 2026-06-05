@@ -54,9 +54,7 @@ afterAll(() => {
 const fillRegisterForm = async () => {
   await userEvent.type(screen.getByPlaceholderText("you@example.com"), "alice@example.com");
   await userEvent.type(screen.getByPlaceholderText("712345678"), "712345678");
-  await userEvent.type(screen.getByPlaceholderText("123 Main St"), "10 Main St");
   await userEvent.type(screen.getByPlaceholderText("Bucharest"), "Bucharest");
-  await userEvent.type(screen.getByPlaceholderText("010101"), "010101");
   await userEvent.type(screen.getByPlaceholderText("Romania"), "Romania");
 };
 
@@ -89,9 +87,7 @@ describe("Registration flow — sequences", () => {
         expect.objectContaining({
           email: "alice@example.com",
           phone: "+40712345678",
-          street_address: "10 Main St",
           city: "Bucharest",
-          postal_code: "010101",
           country: "Romania",
         })
       );
@@ -212,8 +208,6 @@ describe("Registration flow — sequences", () => {
     render(<RegisterForm />);
     await userEvent.type(screen.getByPlaceholderText("you@example.com"), "a@b.com");
     await userEvent.type(screen.getByPlaceholderText("712345678"), "712345678");
-    await userEvent.type(screen.getByPlaceholderText("123 Main St"), "10 St");
-    await userEvent.type(screen.getByPlaceholderText("010101"), "010101");
     await userEvent.type(screen.getByPlaceholderText("Romania"), "Romania");
     fireEvent.click(screen.getByRole("button", { name: /send verification code/i }));
     await waitFor(() => {

@@ -1,10 +1,21 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from core.config import settings
 from routers import auth, plan, search, webhooks
 
-app = FastAPI(title="SmartShop Assistant API")
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    # Warm the retailers cache from Supabase so the first request doesn't block.
+    from services import retailers_service
+    retailers_service.preload()
+    yield
+
+
+app = FastAPI(title="SmartShop Assistant API", lifespan=_lifespan)
 
 app.add_middleware(
     CORSMiddleware,

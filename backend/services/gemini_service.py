@@ -22,6 +22,23 @@ _EMBED = "gemini-embedding-001"
 
 _BACKOFF_ATTEMPTS = 3
 
+# ── Groq circuit breaker ───────────────────────────────────────────────────
+# Activated when Gemini returns 429 / ServerError after all retries.
+# Uses Llama-3.3-70B for scoring (quality match) and Llama-3.1-8B for intent
+# (speed). Falls back gracefully when GROQ_API_KEY is not set.
+
+_groq_client = None
+try:
+    if settings.groq_api_key:
+        from groq import Groq as _Groq
+        _groq_client = _Groq(api_key=settings.groq_api_key)
+        logger.info("[GROQ] circuit breaker configured (Llama 3.3-70B)")
+except Exception as _groq_init_exc:
+    logger.warning("[GROQ] init failed: %s", _groq_init_exc)
+
+_GROQ_SCORE_MODEL = "llama-3.3-70b-versatile"
+_GROQ_INTENT_MODEL = "llama-3.1-8b-instant"
+
 
 def _with_backoff(fn, *args, **kwargs):
     """Call fn(*args, **kwargs) with exponential backoff on ServerError (1 s → 2 s → raise)."""
@@ -38,6 +55,153 @@ def _with_backoff(fn, *args, **kwargs):
             )
             time.sleep(delay)
             delay *= 2
+
+
+def _groq_score(prompt: str) -> list[dict]:
+    """
+    Groq fallback for score_and_rank_products.
+    Sends the exact same scoring prompt to Llama 3.3-70B and parses the result
+    into the same ranked_products format Gemini returns.
+    """
+    if not _groq_client:
+        return []
+    try:
+        resp = _groq_client.chat.completions.create(
+            model=_GROQ_SCORE_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"},
+            temperature=0.1,
+            max_tokens=8192,
+        )
+        raw = resp.choices[0].message.content or ""
+        logger.info("[GROQ] scoring response: %d chars", len(raw))
+        return json.loads(raw).get("ranked_products", [])
+    except Exception as exc:
+        logger.error("[GROQ] scoring failed: %s", exc)
+        return []
+
+
+def _build_compact_scoring_prompt(
+    scraped_results: list[dict],
+    search_description: str,
+    budget_max: "Optional[float]",
+    budget_currency: "Optional[str]",
+    community_picks: list[str] | None = None,
+) -> str:
+    """
+    Compressed scoring prompt for the Groq circuit breaker (target <2k tokens).
+    Uses the markdown signal compressor to include key specs/ratings/buy-signals
+    while excluding navigation, SEO prose, and other noise.
+    Omits full logistics context and return policy to stay within Groq's free-tier TPM.
+    """
+    url_manifest = "\n".join(
+        f"  {i + 1}. {r['url']}" for i, r in enumerate(scraped_results)
+    )
+    budget_str = f"{budget_max} {budget_currency}" if budget_max else "not specified"
+    budget_120 = f"{int(budget_max * 1.2)} {budget_currency}" if budget_max else "not specified"
+
+    picks = [p for p in (community_picks or []) if p]
+    picks_note = (
+        f"Community picks (Reddit/forums): {', '.join(picks[:3])} — "
+        f"boost quality_confidence by up to 10 pts if title matches.\n\n"
+        if picks else ""
+    )
+
+    products_block = ""
+    for i, r in enumerate(scraped_results, 1):
+        jsonld = r.get("jsonld") or {}
+        name = (jsonld.get("name") or r.get("title") or "Unknown")[:80]
+        facts = build_facts_header(jsonld)
+        # 150-char signal snippet — enough for Groq to distinguish product type and quality
+        snippet = _compress_markdown(r.get("markdown") or "", max_chars=150)
+        products_block += (
+            f"\n## PRODUCT {i}\nTitle: {name}\nURL: {r['url']}\n"
+            f"{facts}"
+            f"{snippet}\n"
+        )
+
+    return (
+        f'Score these products for: "{search_description}"\n'
+        f"Budget ceiling: {budget_str} (hard limit: {budget_120})\n\n"
+        f"{picks_note}"
+        f"AUTHORISED URLs (copy verbatim):\n{url_manifest}\n"
+        f"{products_block}\n"
+        f"Rules: drop products over {budget_120} or with explicit out-of-stock signals. "
+        f"value_score = 0.40×cost_efficiency + 0.35×quality_confidence + 0.15×logistics + 0.10×trust. "
+        f"Return JSON only:\n"
+        f'{{"ranked_products": [{{"rank": 1, "title": "...", "url": "...", '
+        f'"price": 0.0, "currency": "...", "image_url": null, '
+        f'"scores": {{"cost_efficiency": 0, "quality_confidence": 0, "logistics": 0, "trust": 0}}, '
+        f'"value_score": 0.0, "reasoning": "1-2 sentences."}}]}}'
+    )
+
+
+def _groq_intent(system: str, messages) -> dict:
+    """
+    Groq fallback for classify_intent.
+    Converts Gemini Content objects to OpenAI-style messages and calls Llama 3.1-8B.
+    """
+    if not _groq_client:
+        return {}
+    try:
+        groq_msgs = [{"role": "system", "content": system}]
+        for msg in messages:
+            role = "user" if msg.role == "user" else "assistant"
+            groq_msgs.append({"role": role, "content": msg.content or ""})
+        resp = _groq_client.chat.completions.create(
+            model=_GROQ_INTENT_MODEL,
+            messages=groq_msgs,
+            response_format={"type": "json_object"},
+            temperature=0.1,
+            max_tokens=4096,
+        )
+        raw = resp.choices[0].message.content or ""
+        return json.loads(raw)
+    except Exception as exc:
+        logger.error("[GROQ] intent failed: %s", exc)
+        return {}
+
+# ── Markdown signal compressor ────────────────────────────────────────────────
+# Keeps only lines that carry numeric or purchase-related signals.
+# Discards navigation menus, cookie banners, SEO prose, and base64/URL blobs.
+_SIGNAL_KW = frozenset({
+    # Stock / purchase
+    "stock", "stoc", "cart", "cos", "buy", "cumpara", "order", "comanda",
+    "deliver", "livrare", "shipping", "expeditie", "disponibil", "available",
+    "purchas", "checkout",
+    # Quality / reviews
+    "review", "rating", "stars", "stele", "nota", "parere", "bewertung", "avis",
+    "opiniones", "recensione",
+    # Common spec units and components
+    "gb ", "tb ", "ghz", "mhz", " inch", "inci", " cm", " kg", " g ", " w ",
+    "watt", " hz", " rpm", "mah", "mp ", "megapixel",
+    "ram", "ssd", "hdd", "nvme", "display", "screen", "ecran", "amoled", "oled",
+    "battery", "baterie", "nvidia", "amd", "intel", "ryzen", "snapdragon",
+    "bluetooth", "wifi", "usb", "hdmi", "ethernet",
+    # Return / warranty (trust signal)
+    "garantie", "warranty", "guarantee", "retour", "return", "retur",
+})
+
+
+def _compress_markdown(md: str, max_chars: int = 600) -> str:
+    """
+    Extract signal-dense lines from raw markdown, discarding SEO/navigation noise.
+    Used to reduce LLM payload from ~3000 chars/product to a focused snippet.
+    """
+    kept: list[str] = []
+    total = 0
+    for raw in md.splitlines():
+        line = raw.strip()
+        if not line or len(line) > 160:  # skip empty lines and full prose paragraphs
+            continue
+        ll = line.lower()
+        if any(c.isdigit() for c in line) or any(kw in ll for kw in _SIGNAL_KW):
+            kept.append(line)
+            total += len(line) + 1
+            if total >= max_chars:
+                break
+    return "\n".join(kept)[:max_chars]
+
 
 # Dynamic logistics helpers
 
@@ -73,16 +237,20 @@ def extract_dynamic_logistics(
     if domain in _logistics_cache:
         return _logistics_cache[domain]
 
+    if len(_logistics_cache) > 500:
+        _logistics_cache.clear()
+        logger.debug("[LOGISTICS] cache evicted — size limit reached")
+
     # Fetch the policy page — we are already running in a threadpool
     from curl_cffi.requests import Session as _S
-    import trafilatura as _t
+    from services.scraper_service import _extract_text_bs4
 
     policy_text: str | None = None
     try:
         with _S(impersonate="chrome124") as session:
             resp = session.get(policy_url, timeout=10)
             if resp.status_code == 200:
-                policy_text = _t.extract(resp.text, include_comments=False) or None
+                policy_text = _extract_text_bs4(resp.text) or None
     except Exception as exc:
         logger.warning("[LOGISTICS] policy fetch failed for %s: %s", policy_url, exc)
 
@@ -182,13 +350,21 @@ _SYSTEM_PROMPT = """\
 You are ShopperAI — an elite autonomous shopping concierge engineered for one mission: \
 find the user the highest-value product at the best price, every time.
 
+## Language Rule
+CRITICAL: Detect the language of the user's most recent message and reply in that exact \
+language for ALL intents (CHAT, CLARIFY, SEARCH reply). If the user writes in Italian → \
+reply in Italian. In German → German. In Romanian → Romanian. In French → French. \
+NEVER default to English unless the user writes in English. The `localized_search_query` \
+field must always use local e-commerce terminology in the regional language regardless of \
+conversation language. Also output the detected language as an ISO 639-1 code in the \
+`language_code` field (e.g. "it", "de", "ro", "fr", "es", "pl", "nl", "pt", "en").
+
 ## Identity & Scope
 - You ONLY discuss products, shopping, prices, e-commerce, comparisons, and purchasing decisions.
 - For ANY off-topic request (coding, homework, trivia, general questions, small talk): \
 respond as CHAT intent. Your reply must be exactly one sentence — a polite but firm \
-decline — followed by one concrete shopping question to re-engage the user. \
-Example: "I'm a shopping assistant and can't help with that, but I'd love to help you \
-find a great product — what are you looking to buy today?"
+decline in the user's language — followed by one concrete shopping question to re-engage \
+the user.
 - Never say "I cannot do that". Redirect confidently to your core mission.
 - You are data-driven, efficient, and direct. No filler, no unnecessary apologies.
 
@@ -287,6 +463,20 @@ RULE 3 — SHORT AND SPECIFIC: 2–6 words maximum.
   Example (Romania): "ASUS laptop 16GB RAM" — not "ASUS laptop 16GB RAM gaming sub 2000 RON"
   Example (Germany): "ASUS Gaming Laptop 16GB" — not "ASUS Laptop kaufen unter 2000 EUR"
 
+RULE 4 — USE A SPECIFIC MODEL NAME, never a generic category.
+  A generic category term ("mountain bike", "TV", "laptop", "gaming chair") returns category
+  grids and search result pages — never a buyable product page. An exact model name
+  ("Rockrider ST 120 29", "LG OLED42C31LA", "ASUS TUF Gaming A15") returns the actual PDP.
+  When `specific_models` is populated (see below), use the FIRST entry as the primary term
+  in `localized_search_query`. Translate or localise spelling only if the model has an official
+  regional variant name; otherwise keep the manufacturer's exact model identifier verbatim.
+  ✓ specific_models[0] = "Rockrider ST 120 29" → query: "Rockrider ST 120 29"
+  ✓ specific_models[0] = "ASUS TUF Gaming A15 2024" → query: "ASUS TUF Gaming A15 2024"
+  ✗ "biciclete MTB" — generic, returns category pages
+  ✗ "gaming laptop" — generic, returns category pages
+  When `specific_models` is null (user named a specific model already), the user's own model
+  name IS the specific term — use it directly in `localized_search_query`.
+
 ## Local Domain Selection (SEARCH intent only)
 Populate local_domains with 3–5 e-commerce domains that best serve the user's location
 and product category. Rules:
@@ -308,6 +498,27 @@ they were just shown — NOT starting an entirely new search. Triggers:
   ✓ "I'm not satisfied because: [reason]" — explicit rejection of the products shown
   ✗ A completely new product category → is_refinement=false
   ✗ A question about one of the products → is_refinement=false (CHAT or CLARIFY)
+
+## Exclusion & Price Floor (excluded_keywords + price_floor)
+When the user complains that results were WRONG CATEGORY (accessories instead of the product
+itself, toy instead of real item, spare parts instead of complete product):
+  • Populate `excluded_keywords` with a JSON array of LOWERCASE terms that must NOT appear
+    in product titles or category breadcrumbs. Think about synonyms in the user's language.
+    Example — user wanted real bikes but got accessories:
+      ["accessories", "accesorii", "accessorio", "accessoire", "zubehör",
+       "spare part", "piesa", "toy", "jucarie", "kit", "cover", "case", "bag",
+       "bell", "lock", "pump", "saddle", "handlebar", "helmet", "glove"]
+    Example — user wanted a laptop but got sleeves/bags:
+      ["bag", "sleeve", "case", "cover", "stand", "geanta", "husa", "suport"]
+  • Leave `excluded_keywords` as an empty array [] when the user is only changing price
+    or color — do NOT populate it for those refinements.
+  • Set `price_floor` to the MINIMUM realistic price (in budget_currency) for the ACTUAL
+    product in the target market. This catches retailers embedding cheap accessories or toys
+    inside a product-category search. Use your world knowledge about market prices.
+    Examples (Romania, RON): mountain bike→400, road bike→800, laptop→1500, smartphone→400,
+    TV 40"→700, gaming chair→500, espresso machine→200, running shoe→150.
+    Examples (Germany, EUR): mountain bike→200, laptop→400, smartphone→200, TV 40"→200.
+    Set to null when the search is for inherently cheap items or when uncertain.
 
 DYNAMIC BUDGET DROP — applies when the user asks for "cheaper" alternatives:
   The assistant message in the chat history lists the products that were shown, including
@@ -344,6 +555,66 @@ product knowledge (e.g. "I don't care about brand", "no preference", "I don't kn
 - If category OR budget is still missing: use CLARIFY to ask only for the missing parameter.
 - NEVER loop asking for preferences the user already said they don't have.
 
+## Adaptive Requirement Gate — Complex & High-Stakes Items
+For high-complexity categories, a brand or size alone is NOT enough — you MUST have at least
+one specific USE CASE before firing a SEARCH. If the use case is absent, ask for it with CLARIFY.
+
+HIGH-COMPLEXITY CATEGORIES (apply this gate):
+  laptop, notebook, gaming pc, desktop, computer, ultrabook, macbook,
+  smartphone, phone, iphone, android,
+  camera, dslr, mirrorless,
+  tv, television, monitor, display,
+  washing machine, dryer, dishwasher, refrigerator, fridge, air conditioner,
+  vacuum cleaner, robot vacuum,
+  premium headphones, wireless headphones, noise-cancelling headphones,
+  gaming console, playstation, xbox, nintendo,
+  tablet, ipad, e-reader,
+  smartwatch, fitness tracker.
+
+APPLY the gate when ALL of the following are true:
+  1. The category is in the high-complexity list above.
+  2. The preference contains ONLY a brand or a size — no use case, no scenario, no activity.
+  3. The user has NOT already described a use case in any earlier turn.
+
+DO NOT APPLY the gate when ANY of the following is true:
+  • The preference or category already implies a use case:
+    "gaming laptop" → use case is gaming ✓
+    "laptop for video editing" → use case is editing ✓
+    "camera for travel" → use case is travel photography ✓
+    "TV for bedroom" → use case is bedroom viewing ✓
+    "running shoes" → use case is running ✓
+  • The user said they have no preference → fall through to No-Preference Handling above.
+  • The user is refining a previous search (is_refinement=true).
+
+WHEN the gate triggers: set intent=CLARIFY and ask exactly ONE question — the single most
+impactful use-case question for the category. Examples:
+  Laptop + only brand  → "What will you mainly use it for — office work, gaming, or creative work?"
+  Smartphone + only brand → "Is photography, gaming, or battery life most important to you?"
+  Headphones + only brand → "Will you use them for commuting, gaming, or studio monitoring?"
+  TV + only brand/size → "What's the main use — movies/streaming, gaming, or a bedroom setup?"
+
+LOW-COMPLEXITY CATEGORIES (skip the gate — fire SEARCH as soon as 3 parameters are present):
+  cables, accessories, bags, books, clothing, shoes, toys, kitchen tools,
+  fitness accessories, office supplies, consumables, chargers, mice, keyboards,
+  basic speakers, earbuds (under budget ceiling), simple appliances.
+
+## Specific Model Names (SEARCH intent only)
+When the user has NOT named a specific product model or SKU, use your world knowledge to
+populate `specific_models` with 2–3 real, currently-sold models that best match the request.
+
+Rules:
+- Models must satisfy ALL stated constraints: category, budget ceiling, preference, use case.
+- Use the exact commercial name a shopper would type into a retailer's search bar
+  (e.g. "Rockrider ST 120 29", "ASUS TUF Gaming A15 2024", "Logitech MX Master 3S").
+  Never use a generic category descriptor ("mountain bike 29er") — that is not a model name.
+- Prefer bestsellers and highly-reviewed models that are actively stocked in the user's region.
+- Omit any model whose typical market price clearly exceeds the user's budget ceiling.
+- Set to null when the user already specified a brand + model or a full SKU — do not rephrase.
+  → null: "Sony WH-1000XM5", "iPhone 16 Pro", "ASUS VivoBook 16 X1605"
+  → populate: "wireless headphones under 1500 RON", "mountain bike for adults", \
+"gaming laptop under 4000 RON", "office chair", "wireless mouse"
+- Set to null for CHAT/CLARIFY intent.
+
 ## REQUIRED OUTPUT FORMAT
 Respond with a single valid JSON object. No markdown fences. No prose outside the JSON.
 The "local_domains" field must be either a JSON array of domain strings or JSON null — never \
@@ -362,7 +633,11 @@ any other value.
   "localized_search_query": "localized e-commerce search string or null",
   "local_domains": null,
   "search_globally": false,
-  "is_refinement": false
+  "is_refinement": false,
+  "excluded_keywords": [],
+  "price_floor": null,
+  "specific_models": null,
+  "language_code": "ISO 639-1 code of the user's language (e.g. 'en', 'ro', 'de', 'fr', 'it', 'es', 'pl', 'nl', 'pt')"
 }
 """
 
@@ -441,6 +716,7 @@ def classify_intent(messages, city: str = "", country: str = "") -> dict:
         "is_refinement": False,
     }
 
+    raw_intent = ""
     try:
         response = _with_backoff(
             _client.models.generate_content,
@@ -454,21 +730,24 @@ def classify_intent(messages, city: str = "", country: str = "") -> dict:
                 thinking_config=types.ThinkingConfig(thinking_budget=0),
             ),
         )
+        raw_intent = getattr(response, "text", None) or ""
+        return json.loads(raw_intent)
     except errors.ServerError:
-        logger.error("[INTENT] Gemini overloaded after %d attempts", _BACKOFF_ATTEMPTS)
+        logger.warning("[INTENT] Gemini overloaded — routing to Groq circuit breaker")
+        groq_result = _groq_intent(system, messages)
+        if groq_result:
+            return groq_result
         _clarify_fallback["reply"] = (
             "The AI is temporarily experiencing high traffic. Please try your search again in a few seconds."
         )
         return _clarify_fallback
-    except Exception as exc:
-        logger.error("[INTENT] Unexpected Gemini error: %s", exc)
-        return _clarify_fallback
-
-    try:
-        return json.loads(response.text)
     except (json.JSONDecodeError, AttributeError, TypeError):
-        logger.warning("[INTENT] JSON parse failed — raw: %.200s", getattr(response, "text", ""))
+        logger.warning("[INTENT] JSON parse failed — raw: %.200s", raw_intent)
         return _clarify_fallback
+    except Exception as exc:
+        logger.warning("[INTENT] Gemini error — routing to Groq circuit breaker: %s", exc)
+        groq_result = _groq_intent(system, messages)
+        return groq_result if groq_result else _clarify_fallback
 
 
 def score_and_rank_products(
@@ -479,6 +758,8 @@ def score_and_rank_products(
     city: str = "",
     country: str = "",
     is_global: bool = False,
+    user_language: str = "English",
+    community_picks: list[str] | None = None,
 ) -> list[dict]:
     """
     Feed all scraped Markdown pages to Gemini and return up to 3 ranked by value score.
@@ -492,7 +773,9 @@ def score_and_rank_products(
 
     products_block = ""
     for i, r in enumerate(scraped_results, 1):
-        md = (r.get("markdown") or "")[:3000]
+        # Compress markdown to signal-dense lines only — eliminates navigation,
+        # SEO prose, cookie banners, and image arrays that bloat the prompt.
+        md = _compress_markdown(r.get("markdown") or "", max_chars=600)
         jsonld = r.get("jsonld") or {}
         facts_header = build_facts_header(jsonld)
 
@@ -506,7 +789,7 @@ def score_and_rank_products(
                     logistics_ctx = _format_dynamic_logistics_ctx(
                         _extract_domain_simple(r["url"]), city, country, logistics
                     )
-            return_text = (r.get("return_policy_text") or "")[:600]
+            return_text = (r.get("return_policy_text") or "")[:250]
             if return_text:
                 return_note = f"### RETURN POLICY\n{return_text}\n\n"
 
@@ -582,10 +865,23 @@ If you cannot determine the exchange rate at all, assign cost_efficiency=40 and 
             f"Do NOT score 0."
         )
 
+    # Build optional community picks block — injected when research found consensus
+    picks = [p for p in (community_picks or []) if p]
+    community_block = ""
+    if picks:
+        picks_str = ", ".join(f'"{m}"' for m in picks[:4])
+        community_block = (
+            f"\n## COMMUNITY RESEARCH SIGNAL\n"
+            f"Reddit, Twitter/X, and tech forums widely recommend these models for this use case: {picks_str}\n"
+            f"If a product's title contains one of these names, you MAY increase its "
+            f"quality_confidence by up to 10 points — only when other quality evidence "
+            f"(rating, specs, reviews) also supports it. This is a soft signal, not a mandate.\n"
+        )
+
     prompt = f"""\
 You are performing product value scoring for a shopping search. Your goal is to find the \
 best quality-price ratio — not the most expensive option, and not the cheapest regardless of quality.
-
+{community_block}
 ## AUTHORISED PRODUCT URLs — {len(scraped_results)} total
 You MUST copy these URLs verbatim into your response. Never invent, shorten, or alter any URL.
 {url_manifest}
@@ -595,8 +891,13 @@ The user's absolute maximum budget is {budget_str}.
 For each product page, answer two binary questions before you touch any score:
 
   A. IS IT PURCHASABLE? — POSITIVE SIGNAL REQUIRED
-     You MUST find at least ONE active transactional element anywhere on the page.
-     Accepted signals (any language):
+     A product passes this check if it has ANY ONE of these signals:
+
+     TIER 1 — Machine-verified (strongest): The MACHINE-VERIFIED DATA block above the
+     product text contains "CONFIRMED AVAILABILITY: In Stock". This alone is sufficient —
+     do NOT require a buy button when JSON-LD availability is confirmed.
+
+     TIER 2 — Page-text buy buttons (any language):
        "Add to cart" / "Add to Cart" / "Adaugă în coș" / "Adauga in cos"
        "Buy now" / "Buy Now" / "Cumpără" / "Cumpara acum"
        "Order now" / "Place order" / "Checkout" / "Purchase"
@@ -606,10 +907,9 @@ For each product page, answer two binary questions before you touch any score:
        "カートに追加" / "今すぐ購入" (Japanese)
        Any clearly equivalent button or link in any other language.
 
-     → If NONE of these signals appear ANYWHERE on the page → ELIMINATE immediately.
-       Pages that only show "In stock", "Available", product specs, reviews, or brand info
-       WITHOUT an explicit buy/cart button are manufacturer spec sheets, blog posts, or
-       category pages — they are NOT purchasable. Drop them.
+     → If NEITHER Tier 1 nor Tier 2 applies → ELIMINATE immediately.
+       Pages that have no confirmed stock status AND no buy button are likely
+       blog posts, brand pages, or category listings. Drop them.
 
      ALSO ELIMINATE if any explicit negative signal is present:
        • "Stoc epuizat" / "Out of stock" / "Ruptura de stoc" / "Epuizat"
@@ -702,6 +1002,9 @@ Round value_score to 1 decimal place.
 ## Products to Analyse
 {products_block}
 
+LANGUAGE: Write the "reasoning" field in {user_language}. All text visible to the user \
+must be in {user_language}.
+
 Return ONLY a valid JSON object with 1 to 3 products ranked by value_score (best first). \
 Only include products whose URL appears in the AUTHORISED PRODUCT URLs list above:
 {{
@@ -727,7 +1030,17 @@ well below the budget ceiling — excellent value for the price.' Flag any missi
   ]
 }}"""
 
-    logger.info("[SCORING] sending %d products to Gemini for scoring", len(scraped_results))
+    # Compact prompt for Groq circuit breaker — fits within the 12k TPM free-tier limit.
+    # Omits full markdown, logistics context, and return policy text.
+    groq_prompt = _build_compact_scoring_prompt(
+        scraped_results, search_description, budget_max, budget_currency, picks
+    )
+    logger.info(
+        "[SCORING] sending %d products to Gemini (~%d tokens) / Groq fallback (~%d tokens)",
+        len(scraped_results), len(prompt) // 4, len(groq_prompt) // 4,
+    )
+    ranked: list[dict] = []
+    raw = ""
     try:
         response = _with_backoff(
             _client.models.generate_content,
@@ -739,28 +1052,25 @@ well below the budget ceiling — excellent value for the price.' Flag any missi
                 max_output_tokens=8192,
             ),
         )
-    except errors.ServerError as e:
-        logger.error("[SCORING] Gemini overloaded after %d attempts: %s", _BACKOFF_ATTEMPTS, e)
-        return {
-            "error": "The AI scoring engine is currently experiencing high traffic. Please try your search again in a few seconds.",
-            "status": 503,
-        }
-    except Exception as e:
-        logger.error("[SCORING] Unexpected error in AI scoring: %s", e)
-        return {
-            "error": "Failed to rank products due to an internal error.",
-            "status": 500,
-        }
-
-    raw = getattr(response, "text", None) or ""
-    logger.info("[SCORING] Gemini response: %d chars — first 400: %s", len(raw), raw[:400])
-    try:
-        result = json.loads(raw)
-        ranked = result.get("ranked_products", [])
+        raw = getattr(response, "text", None) or ""
+        logger.info("[SCORING] Gemini response: %d chars — first 400: %s", len(raw), raw[:400])
+        ranked = json.loads(raw).get("ranked_products", [])
         logger.info("[SCORING] parsed %d ranked_products", len(ranked))
+    except errors.ServerError as exc:
+        logger.warning("[SCORING] Gemini overloaded — routing to Groq circuit breaker: %s", exc)
+        ranked = _groq_score(groq_prompt)
+        if not ranked:
+            return []
     except (json.JSONDecodeError, AttributeError, TypeError, ValueError) as exc:
-        logger.error("[SCORING] JSON parse failed (%s) — full raw: %s", exc, raw)
-        return []
+        logger.warning("[SCORING] Gemini JSON parse failed (%s) — routing to Groq: %.200s", exc, raw)
+        ranked = _groq_score(groq_prompt)
+        if not ranked:
+            return []
+    except Exception as exc:
+        logger.warning("[SCORING] Gemini error — routing to Groq circuit breaker: %s", exc)
+        ranked = _groq_score(groq_prompt)
+        if not ranked:
+            return []
 
     # Reject hallucinated URLs. Only products whose URL came from Tavily (and is a real http URL)
     # are allowed through. This prevents example.com or invented URLs reaching the frontend.
@@ -781,28 +1091,41 @@ well below the budget ceiling — excellent value for the price.' Flag any missi
             len(ranked),
         )
 
-    # Recompute value_score deterministically — never trust Gemini's arithmetic.
+    # Normalize + recompute scores deterministically.
+    # LLMs sometimes output 0–1 scale (e.g. 0.85) instead of 0–100 (e.g. 85).
+    # Frontend renders Math.round(value) so 0.85 → "1" — visually wrong.
+    _DIMS = ("cost_efficiency", "quality_confidence", "logistics", "trust")
     for p in ranked:
         s = p.get("scores") or {}
-        cost_eff  = max(0.0, min(100.0, float(s.get("cost_efficiency",  0) or 0)))
-        quality   = max(0.0, min(100.0, float(s.get("quality_confidence", 0) or 0)))
-        logistics = max(0.0, min(100.0, float(s.get("logistics",          0) or 0)))
-        trust     = max(0.0, min(100.0, float(s.get("trust",              0) or 0)))
-        # Store clamped values back so the rest of the pipeline sees clean numbers
-        s["cost_efficiency"]   = cost_eff
-        s["quality_confidence"] = quality
-        s["logistics"]         = logistics
-        s["trust"]             = trust
+        raw_vals = {d: float(s.get(d, 0) or 0) for d in _DIMS}
+
+        # Detect 0–1 scale: ALL four dimension scores are ≤ 1.0
+        if all(v <= 1.0 for v in raw_vals.values()):
+            raw_vals = {d: round(v * 100, 1) for d, v in raw_vals.items()}
+
+        # Detect partial 0–1 scale: any score is strictly fractional (0 < v < 1)
+        # while at least one other is clearly on 0–100 scale (> 1.0)
+        elif any(0.0 < v < 1.0 for v in raw_vals.values()):
+            raw_vals = {
+                d: (round(v * 100, 1) if 0.0 < v < 1.0 else v)
+                for d, v in raw_vals.items()
+            }
+
+        # Clamp to valid range and write back
+        for d in _DIMS:
+            s[d] = max(0.0, min(100.0, raw_vals[d]))
         p["scores"] = s
+
+        # Always recompute value_score — never trust the LLM's arithmetic
         p["value_score"] = round(
-            cost_eff * SCORE_WEIGHTS["cost_efficiency"]
-            + quality * SCORE_WEIGHTS["quality_confidence"]
-            + logistics * SCORE_WEIGHTS["logistics"]
-            + trust * SCORE_WEIGHTS["trust"],
+            s["cost_efficiency"]   * SCORE_WEIGHTS["cost_efficiency"]
+            + s["quality_confidence"] * SCORE_WEIGHTS["quality_confidence"]
+            + s["logistics"]          * SCORE_WEIGHTS["logistics"]
+            + s["trust"]              * SCORE_WEIGHTS["trust"],
             1,
         )
 
-    # Re-sort by the corrected score (Gemini's order may have been based on wrong values)
+    # Re-sort by the corrected score (LLM's order may have been based on wrong values)
     ranked.sort(key=lambda p: p["value_score"], reverse=True)
 
     # Reassign rank numbers after re-sort
@@ -823,6 +1146,7 @@ def explain_no_results(
     budget_currency: Optional[str],
     city: str = "",
     country: str = "",
+    user_language: str = "English",
 ) -> str:
     """
     Called when both local and global pipelines return zero scorable products.
@@ -835,6 +1159,7 @@ def explain_no_results(
     prompt = (
         f"You are ShopperAI. A product search returned zero results after checking "
         f"both local ({location}) and global shops.\n\n"
+        f"IMPORTANT: Write your entire response in {user_language}.\n\n"
         f"Search details:\n"
         f"  Product: {category} — {preference}\n"
         f"  Budget: {budget_str}\n"
@@ -872,6 +1197,85 @@ def explain_no_results(
         f"This usually means the budget is below the market floor for this product type. "
         f"Would you like to raise your budget, adjust the specs, or try a broader category?"
     )
+
+
+def research_community_picks(
+    category: str,
+    preference: str | None,
+    budget: str | None,
+    user_language: str = "English",
+) -> dict:
+    """
+    Use Gemini with Google Search grounding to find product recommendations from
+    Reddit, Twitter/X, and tech review communities before any e-commerce search.
+
+    Returns:
+        {
+            "recommendations": ["Sony WH-1000XM5", "Bose QC45"],
+            "insight": "One sentence in user_language summarising community consensus",
+        }
+
+    On failure or no consensus, returns {"recommendations": [], "insight": None}.
+    Picks are passed to the scorer as a soft quality_confidence signal only —
+    they are NOT injected into the Tavily query to avoid constraining results
+    to expensive/out-of-budget models.
+    Runs synchronously — call via run_in_threadpool from async handlers.
+    """
+    product_desc = " ".join(filter(None, [preference, category])).strip() or category
+    budget_note = f" with a budget of {budget}" if budget else ""
+
+    prompt = (
+        f"You are a product research assistant. Do ONE focused Google search to find "
+        f"the most frequently recommended specific models for: {product_desc}{budget_note}.\n\n"
+        f"IMPORTANT: Write the 'insight' field in {user_language}.\n\n"
+        f"Return ONLY a raw JSON object — no markdown, no explanation:\n"
+        f'{{\n'
+        f'  "recommendations": ["Brand Model1", "Brand Model2"],\n'
+        f'  "insight": "One sentence in {user_language} summarising the community consensus"\n'
+        f'}}\n\n'
+        f"Rules:\n"
+        f"- recommendations: 2–4 specific brand+model names (e.g. 'Sony WH-1000XM5', NOT 'Sony headphones')\n"
+        f"- These are scoring hints only — do NOT worry about price matching\n"
+        f"- insight: one concrete sentence about community consensus, in {user_language}\n"
+        f"- If no clear consensus: {{\"recommendations\": [], \"insight\": null}}"
+    )
+
+    try:
+        response = _with_backoff(
+            _client.models.generate_content,
+            model=_FLASH,
+            contents=[types.Content(role="user", parts=[types.Part(text=prompt)])],
+            config=types.GenerateContentConfig(
+                tools=[types.Tool(google_search=types.GoogleSearch())],
+                temperature=0.2,
+                max_output_tokens=1024,
+                thinking_config=types.ThinkingConfig(thinking_budget=0),
+            ),
+        )
+        raw = (getattr(response, "text", None) or "").strip()
+        if not raw:
+            return {"recommendations": [], "insight": None, "query_boost": None}
+
+        # Search-grounded responses typically embed JSON inside explanation text.
+        # Use the LAST complete JSON object found (in case model echoes the example).
+        matches = list(re.finditer(r"\{[^{}]*\"recommendations\"[^{}]*\}", raw, re.DOTALL))
+        if not matches:
+            # Fallback: try any JSON object
+            matches = list(re.finditer(r"\{.*?\}", raw, re.DOTALL))
+        for m in reversed(matches):  # last match is usually the answer, not the example
+            try:
+                data = json.loads(m.group())
+                recs = [str(r) for r in (data.get("recommendations") or []) if r]
+                insight = data.get("insight") or None
+                if recs:
+                    logger.info("[RESEARCH] community picks: %s", recs)
+                    return {"recommendations": recs, "insight": insight}
+            except (json.JSONDecodeError, ValueError):
+                continue
+    except Exception as exc:
+        logger.warning("[RESEARCH] community research failed: %s", exc)
+
+    return {"recommendations": [], "insight": None}
 
 
 def generate_embedding(text: str) -> list[float]:

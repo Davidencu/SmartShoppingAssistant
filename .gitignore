@@ -9,4 +9,7 @@ build/
 .env
 .env.local
 .env.development.local
+stagehand-service/.env
+stagehand-service/.env.local
+stagehand-service/.env.development.local
 

@@ -10,6 +10,8 @@ import json
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 
+from tests.conftest import sse_result
+
 CHAT_URL = "/search/chat"
 
 
@@ -63,6 +65,12 @@ def _rich_markdown(title: str, price: float, currency: str) -> str:
 def _mock_full_pipeline(mocker, intent_payload, products):
     mocker.patch("services.gemini_service.classify_intent", return_value=intent_payload)
     mocker.patch("services.gemini_service.generate_embedding", return_value=[0.1] * 768)
+    mocker.patch(
+        "services.gemini_service.research_community_picks",
+        return_value={"recommendations": [], "insight": None},
+    )
+    # Bypass the product-URL heuristic so short test URLs are never filtered out.
+    mocker.patch("routers.search.is_likely_product_url", return_value=True)
     mocker.patch("services.cache_service.lookup_cache", return_value=None)
     mocker.patch("services.tavily_service.search_products", return_value=[
         {"url": p["url"], "title": p["title"]} for p in products
@@ -281,7 +289,7 @@ class TestCommonProductRequests:
             headers={"Authorization": f"Bearer {auth_token}"},
         )
         assert resp.status_code == 200
-        data = resp.json()
+        data = sse_result(resp)
         assert data["intent"] == "SEARCH"
         assert len(data["products"]) == 3
         assert data["from_cache"] is False
@@ -306,8 +314,9 @@ class TestCommonProductRequests:
             headers={"Authorization": f"Bearer {auth_token}"},
         )
         assert resp.status_code == 200
-        assert resp.json()["intent"] == "SEARCH"
-        assert resp.json()["collected_params"]["category"] == "Shoes"
+        data = sse_result(resp)
+        assert data["intent"] == "SEARCH"
+        assert data["collected_params"]["category"] == "Shoes"
 
     def test_sony_headphones_noise_cancelling_under_1500_ron(self, client, mock_supabase, auth_token, mocker):
         """User: 'Sony WH-1000XM5 noise cancelling under 1500 RON'"""
@@ -329,8 +338,9 @@ class TestCommonProductRequests:
             headers={"Authorization": f"Bearer {auth_token}"},
         )
         assert resp.status_code == 200
-        assert resp.json()["intent"] == "SEARCH"
-        products = resp.json()["products"]
+        data = sse_result(resp)
+        assert data["intent"] == "SEARCH"
+        products = data["products"]
         # XM4 at 899 RON (well under budget) ranks first due to high cost_efficiency
         assert products[0]["title"] == "Sony WH-1000XM4"
         assert products[0]["scores"]["cost_efficiency"] == 100
@@ -356,7 +366,7 @@ class TestCommonProductRequests:
             headers={"Authorization": f"Bearer {auth_token}"},
         )
         assert resp.status_code == 200
-        products = resp.json()["products"]
+        products = sse_result(resp)["products"]
         assert len(products) == 3
         # The most expensive option (ROG Strix at 3799) should not rank first
         assert products[0]["title"] != "ASUS ROG Strix G15"
@@ -380,8 +390,9 @@ class TestCommonProductRequests:
             headers={"Authorization": f"Bearer {auth_token}"},
         )
         assert resp.status_code == 200
-        assert resp.json()["intent"] == "SEARCH"
-        assert resp.json()["collected_params"]["category"] == "Mountain Bike"
+        data = sse_result(resp)
+        assert data["intent"] == "SEARCH"
+        assert data["collected_params"]["category"] == "Mountain Bike"
 
     def test_apple_airpods_pro_under_200_usd(self, client, mock_supabase, auth_token, mocker):
         """User: 'Apple AirPods Pro under 200 USD' — different currency"""
@@ -401,7 +412,7 @@ class TestCommonProductRequests:
             headers={"Authorization": f"Bearer {auth_token}"},
         )
         assert resp.status_code == 200
-        data = resp.json()
+        data = sse_result(resp)
         assert data["collected_params"]["budget_currency"] == "USD"
         assert len(data["products"]) == 3
 
@@ -422,7 +433,7 @@ class TestAmbiguousRequestsTriggerClarify:
             headers={"Authorization": f"Bearer {auth_token}"},
         )
         assert resp.status_code == 200
-        data = resp.json()
+        data = sse_result(resp)
         assert data["intent"] == "CLARIFY"
         assert data["reply"] is not None
         assert data["products"] is None
@@ -444,7 +455,7 @@ class TestAmbiguousRequestsTriggerClarify:
             headers={"Authorization": f"Bearer {auth_token}"},
         )
         assert resp.status_code == 200
-        data = resp.json()
+        data = sse_result(resp)
         assert data["intent"] == "CLARIFY"
         assert data["collected_params"]["category"] == "Laptop"
         assert data["collected_params"]["budget"] is None
@@ -466,7 +477,7 @@ class TestAmbiguousRequestsTriggerClarify:
             headers={"Authorization": f"Bearer {auth_token}"},
         )
         assert resp.status_code == 200
-        data = resp.json()
+        data = sse_result(resp)
         assert data["intent"] == "CLARIFY"
         assert data["collected_params"]["budget_max"] == 800.0
         assert data["collected_params"]["preference"] is None
@@ -488,7 +499,7 @@ class TestAmbiguousRequestsTriggerClarify:
             headers={"Authorization": f"Bearer {auth_token}"},
         )
         assert resp.status_code == 200
-        assert resp.json()["intent"] == "CLARIFY"
+        assert sse_result(resp)["intent"] == "CLARIFY"
         tavily.assert_not_called()
 
     def test_off_topic_request_returns_chat_and_no_search(self, client, mock_supabase, auth_token, mocker):
@@ -510,7 +521,7 @@ class TestAmbiguousRequestsTriggerClarify:
             headers={"Authorization": f"Bearer {auth_token}"},
         )
         assert resp.status_code == 200
-        data = resp.json()
+        data = sse_result(resp)
         assert data["intent"] == "CHAT"
         assert data["products"] is None
         tavily.assert_not_called()
@@ -541,7 +552,7 @@ class TestNoPreferenceHandling:
             headers={"Authorization": f"Bearer {auth_token}"},
         )
         assert resp.status_code == 200
-        data = resp.json()
+        data = sse_result(resp)
         assert data["intent"] == "SEARCH"
         assert data["collected_params"]["preference"] == "best value for budget"
         assert len(data["products"]) == 3
@@ -564,7 +575,7 @@ class TestNoPreferenceHandling:
             headers={"Authorization": f"Bearer {auth_token}"},
         )
         assert resp.status_code == 200
-        assert resp.json()["intent"] == "SEARCH"
+        assert sse_result(resp)["intent"] == "SEARCH"
 
 
 # 6. Multi-turn conversations
@@ -585,8 +596,9 @@ class TestMultiTurnConversation:
             json={"messages": [{"role": "user", "content": "I need an ASUS laptop"}]},
             headers={"Authorization": f"Bearer {auth_token}"},
         )
-        assert resp1.json()["intent"] == "CLARIFY"
-        assert resp1.json()["collected_params"]["preference"] == "ASUS brand"
+        data1 = sse_result(resp1)
+        assert data1["intent"] == "CLARIFY"
+        assert data1["collected_params"]["preference"] == "ASUS brand"
 
         laptops = [
             _product(1, "ASUS VivoBook 16",  "https://emag.ro/vivo16", 1799, "RON", 88, 80, 85, 90),
@@ -608,11 +620,11 @@ class TestMultiTurnConversation:
             headers={"Authorization": f"Bearer {auth_token}"},
         )
         assert resp2.status_code == 200
-        data = resp2.json()
-        assert data["intent"] == "SEARCH"
-        assert data["collected_params"]["budget_max"] == 2000.0
-        assert data["collected_params"]["preference"] == "ASUS brand"
-        assert len(data["products"]) == 3
+        data2 = sse_result(resp2)
+        assert data2["intent"] == "SEARCH"
+        assert data2["collected_params"]["budget_max"] == 2000.0
+        assert data2["collected_params"]["preference"] == "ASUS brand"
+        assert len(data2["products"]) == 3
 
     def test_three_turn_spec_revealed_progressively(self, client, mock_supabase, auth_token, mocker):
         """
@@ -629,7 +641,7 @@ class TestMultiTurnConversation:
             json={"messages": [{"role": "user", "content": "laptop"}]},
             headers={"Authorization": f"Bearer {auth_token}"},
         )
-        assert resp.json()["intent"] == "CLARIFY"
+        assert sse_result(resp)["intent"] == "CLARIFY"
 
         mocker.patch("services.gemini_service.classify_intent", return_value=_clarify_intent(
             "What's your budget?",
@@ -644,8 +656,9 @@ class TestMultiTurnConversation:
             ]},
             headers={"Authorization": f"Bearer {auth_token}"},
         )
-        assert resp.json()["intent"] == "CLARIFY"
-        assert resp.json()["collected_params"]["preference"] == "ASUS brand"
+        data = sse_result(resp)
+        assert data["intent"] == "CLARIFY"
+        assert data["collected_params"]["preference"] == "ASUS brand"
 
         laptops = [
             _product(1, "ASUS ROG Strix G15",  "https://emag.ro/rog",  2999, "RON", 90, 92, 85, 95),
@@ -668,8 +681,9 @@ class TestMultiTurnConversation:
             ]},
             headers={"Authorization": f"Bearer {auth_token}"},
         )
-        assert resp.json()["intent"] == "SEARCH"
-        assert resp.json()["collected_params"]["budget_max"] == 3000.0
+        data = sse_result(resp)
+        assert data["intent"] == "SEARCH"
+        assert data["collected_params"]["budget_max"] == 3000.0
 
     def test_user_corrects_budget_in_later_message(self, client, mock_supabase, auth_token, mocker):
         """
@@ -696,7 +710,7 @@ class TestMultiTurnConversation:
             headers={"Authorization": f"Bearer {auth_token}"},
         )
         assert resp.status_code == 200
-        data = resp.json()
+        data = sse_result(resp)
         assert data["intent"] == "SEARCH"
         assert data["collected_params"]["budget_max"] == 2000.0
 
@@ -782,6 +796,11 @@ class TestLocationFromSupabase:
             "Laptop", "under 2000 RON", 2000.0, "RON", "ASUS", ["emag.ro"]
         ))
         mocker.patch("services.gemini_service.generate_embedding", return_value=[0.1] * 768)
+        mocker.patch(
+            "services.gemini_service.research_community_picks",
+            return_value={"recommendations": [], "insight": None},
+        )
+        mocker.patch("routers.search.is_likely_product_url", return_value=True)
         mocker.patch("services.cache_service.lookup_cache", return_value=None)
         mocker.patch("services.tavily_service.search_products", return_value=[
             {"url": "https://emag.ro/asus", "title": "ASUS Laptop"}

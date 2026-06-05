@@ -10,20 +10,27 @@ import { sendChatMessage, ApiError, type ChatMessage, type Product } from "@/lib
 let _idCounter = 0;
 const nextId = () => `msg-${++_idCounter}`;
 
-function TypingIndicator() {
+function TypingIndicator({ status }: { status?: string | null }) {
   return (
     <div className="flex gap-4">
       <div className="w-10 h-10 rounded-full bg-gray-600 dark:bg-gray-500 flex items-center justify-center shrink-0">
         <Bot className="w-5 h-5 text-white" />
       </div>
-      <div className="bg-gray-100 dark:bg-gray-700 rounded-2xl rounded-tl-sm px-5 py-4 flex items-center gap-1.5">
-        {[0, 150, 300].map((delay) => (
-          <span
-            key={delay}
-            className="w-2.5 h-2.5 bg-gray-400 dark:bg-gray-500 rounded-full animate-bounce"
-            style={{ animationDelay: `${delay}ms` }}
-          />
-        ))}
+      <div className="bg-gray-100 dark:bg-gray-700 rounded-2xl rounded-tl-sm px-5 py-4 flex items-center gap-3">
+        <div className="flex items-center gap-1.5">
+          {[0, 150, 300].map((delay) => (
+            <span
+              key={delay}
+              className="w-2.5 h-2.5 bg-gray-400 dark:bg-gray-500 rounded-full animate-bounce"
+              style={{ animationDelay: `${delay}ms` }}
+            />
+          ))}
+        </div>
+        {status && (
+          <span className="text-sm text-gray-500 dark:text-gray-400 animate-pulse">
+            {status}
+          </span>
+        )}
       </div>
     </div>
   );
@@ -33,6 +40,7 @@ export default function ChatInterface() {
   const router = useRouter();
   const [messages, setMessages] = useState<Message[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+  const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const chatInputRef = useRef<ChatInputHandle>(null);
@@ -85,7 +93,12 @@ export default function ChatInterface() {
       const token = localStorage.getItem("smartshop_token") ?? "";
       const excludedUrls = pendingExcludedUrls.current;
       pendingExcludedUrls.current = [];
-      const response = await sendChatMessage(apiMessages, token, excludedUrls.length > 0 ? excludedUrls : undefined);
+      const response = await sendChatMessage(
+        apiMessages,
+        token,
+        excludedUrls.length > 0 ? excludedUrls : undefined,
+        (msg) => setStatusMessage(msg),
+      );
 
       const assistantMsg: Message = {
         id: nextId(),
@@ -93,8 +106,8 @@ export default function ChatInterface() {
         content:
           response.intent === "SEARCH"
             ? response.products && response.products.length > 0
-              ? "Here are the top products ranked by value score:"
-              : "I couldn't find matching products. Try adjusting your criteria."
+              ? (response.reply ?? "Here are the top products ranked by value score:")
+              : (response.reply ?? "I couldn't find matching products. Try adjusting your criteria.")
             : response.reply ?? "",
         products: response.products ?? undefined,
         fromCache: response.from_cache,
@@ -110,6 +123,7 @@ export default function ChatInterface() {
       setError(err instanceof Error ? err.message : "Something went wrong. Please try again.");
     } finally {
       setIsLoading(false);
+      setStatusMessage(null);
     }
   };
 
@@ -162,7 +176,7 @@ export default function ChatInterface() {
             );
           })}
 
-          {isLoading && <TypingIndicator />}
+          {isLoading && <TypingIndicator status={statusMessage} />}
           {error && (
             <div className="text-center">
               <p className="text-base text-red-500 dark:text-red-400">{error}</p>

@@ -34,9 +34,7 @@ class TestSendOtp:
             json={
                 "email": "bad",
                 "phone": "+40712345678",
-                "street_address": "St",
                 "city": "City",
-                "postal_code": "12345",
                 "country": "RO",
             },
         )
@@ -48,9 +46,7 @@ class TestSendOtp:
             json={
                 "email": "test@example.com",
                 "phone": "0712345678",  # missing + prefix
-                "street_address": "St",
                 "city": "City",
-                "postal_code": "12345",
                 "country": "RO",
             },
         )
@@ -102,10 +98,8 @@ class TestVerifyOtp:
 
         auth_module._registration_data["test@example.com"] = {
             "phone": "+40712345678",
-            "street_address": "123 St",
             "city": "City",
             "state": None,
-            "postal_code": "12345",
             "country": "RO",
         }
 
@@ -161,10 +155,8 @@ class TestPasskeyRegister:
         auth_module._registration_data["test@example.com"] = {
             "user_id": "user-uuid",
             "phone": "+40712345678",
-            "street_address": "123 Main St",
             "city": "Bucharest",
             "state": None,
-            "postal_code": "010101",
             "country": "Romania",
         }
         mock_supabase.table.return_value.insert.return_value.execute.return_value = MagicMock()
@@ -232,10 +224,8 @@ class TestVerifyMagic:
 
         auth_module._registration_data["test@example.com"] = {
             "phone": "+40712345678",
-            "street_address": "123 Main St",
             "city": "Bucharest",
             "state": None,
-            "postal_code": "010101",
             "country": "Romania",
         }
 

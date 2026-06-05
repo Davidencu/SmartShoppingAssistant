@@ -208,6 +208,44 @@ def _extract_offer(offer: dict, facts: dict) -> None:
     elif "discontinued" in av:
         facts["availability"] = "Discontinued"
 
+    # Schema.org OfferShippingDetails — already on the page, zero extra requests
+    shipping = offer.get("shippingDetails")
+    if isinstance(shipping, list):
+        shipping = shipping[0] if shipping else None
+    if isinstance(shipping, dict):
+        _extract_shipping_details(shipping, facts)
+
+
+def _extract_shipping_details(shipping: dict, facts: dict) -> None:
+    """Pull shipping cost + delivery window from OfferShippingDetails."""
+    rate = shipping.get("shippingRate")
+    if isinstance(rate, list):
+        rate = rate[0] if rate else None
+    if isinstance(rate, dict) and "shipping_cost" not in facts:
+        raw = rate.get("value") if "value" in rate else rate.get("price")
+        curr = rate.get("currency") or rate.get("priceCurrency")
+        if raw is not None:
+            try:
+                facts["shipping_cost"] = float(str(raw).replace(",", "."))
+                if curr:
+                    facts["shipping_currency"] = str(curr).strip().upper()
+            except (ValueError, TypeError):
+                pass
+
+    dt = shipping.get("deliveryTime")
+    if isinstance(dt, dict) and "delivery_days" not in facts:
+        transit = dt.get("transitTime") or dt
+        if isinstance(transit, dict):
+            mn = transit.get("minValue")
+            mx = transit.get("maxValue")
+            if mn is not None and mx is not None:
+                facts["delivery_days"] = f"{int(mn)}–{int(mx)}"
+            elif mx is not None:
+                facts["delivery_days"] = str(int(mx))
+
+    if shipping.get("doesNotShip") is True and "availability" not in facts:
+        facts["availability"] = "Cannot Ship"
+
 
 @functools.lru_cache(maxsize=_JSONLD_CACHE_SIZE)
 def extract_bs4_facts(html: str) -> dict:
@@ -431,6 +469,17 @@ def build_facts_header(jsonld: dict) -> str:
         lines.append(f"CONFIRMED RATING: {jsonld['rating']}")
     if "seller" in jsonld:
         lines.append(f"CONFIRMED SELLER: {jsonld['seller']}")
+    if "shipping_cost" in jsonld:
+        raw_cost = jsonld["shipping_cost"]
+        if raw_cost == 0:
+            cost_str = "FREE"
+        else:
+            cost_str = str(raw_cost)
+            if "shipping_currency" in jsonld:
+                cost_str += f" {jsonld['shipping_currency']}"
+        lines.append(f"CONFIRMED SHIPPING COST: {cost_str}")
+    if "delivery_days" in jsonld:
+        lines.append(f"CONFIRMED DELIVERY: {jsonld['delivery_days']} business days")
 
     if not lines:
         return ""
