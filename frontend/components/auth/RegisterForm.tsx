@@ -98,12 +98,17 @@ export default function RegisterForm() {
     setGlobalError("");
     setAlreadyRegistered(false);
     const email = form.email.trim().toLowerCase();
+    
+    // Fixed: Included street_address and postal_code fallback values to satisfy 'RegistrationData'
     const pendingData = {
       phone: `${form.countryCode}${form.phone.trim()}`,
       city: form.city.trim(),
       state: form.state.trim() || undefined,
       country: form.country.trim(),
+      street_address: "", 
+      postal_code: "",
     };
+    
     try {
       sessionStorage.setItem("pending_registration_data", JSON.stringify(pendingData));
       await sendOtp({ email, ...pendingData });
