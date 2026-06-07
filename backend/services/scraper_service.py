@@ -141,6 +141,10 @@ _cf_worker_lock = threading.Lock()
 # fail once are remembered in _proxy_required_domains so future fetches skip
 # the wasted direct attempt and go straight to the proxy.
 _proxy_url: str = ""   # "http://user:pass@host:port" — empty = no proxy
+_proxy_host: str = ""
+_proxy_port: str = ""
+_proxy_username: str = ""
+_proxy_password: str = ""
 
 # In-memory learner: domains where a direct attempt has already failed this
 # session.  Seeded from Supabase hostile_domains table on startup so learned
@@ -263,6 +267,7 @@ def _load_hostile_domains() -> None:
 def _init_cf_workers() -> None:
     """Load Worker URLs + secret + residential proxy from settings."""
     global _cf_worker_urls, _cf_worker_secret, _proxy_url
+    global _proxy_host, _proxy_port, _proxy_username, _proxy_password
     try:
         from core.config import settings  # local import avoids circular deps at module load
         raw = (settings.cf_worker_urls or "").strip()
@@ -280,6 +285,7 @@ def _init_cf_workers() -> None:
         pwd  = (settings.proxy_password or "").strip()
         if host and port and user and pwd:
             _proxy_url = f"http://{user}:{pwd}@{host}:{port}"
+            _proxy_host, _proxy_port, _proxy_username, _proxy_password = host, port, user, pwd
             logger.info("[PROXY] residential proxy configured: %s:%s", host, port)
         else:
             logger.debug("[PROXY] no residential proxy configured")
@@ -628,6 +634,21 @@ def is_likely_product_url(url: str) -> bool:
         return True  # on parse error, allow through
 
 
+def is_cloudflare_challenge(html_content: str, status_code: int) -> bool:
+    """Detect a Cloudflare waiting room or JS challenge page (returns 200 or 503)."""
+    if status_code == 503:
+        return True
+    if not html_content:
+        return False
+    challenge_markers = [
+        "<title>Just a moment...</title>",
+        "cf-turnstile",
+        "cf-browser-verification",
+        "window._cf_chl_opt",
+    ]
+    return any(marker in html_content for marker in challenge_markers)
+
+
 def is_valid_product_page(html: str) -> bool:
     """
     Detect SPA shells and WAF honeypot pages that return HTTP 200 but carry no
@@ -772,6 +793,48 @@ def _proxies() -> dict | None:
     return {"http": _proxy_url, "https": _proxy_url}
 
 
+def _country_for_url(url: str) -> str:
+    """Map a URL's TLD to the 2-letter ISO country code used by the residential proxy."""
+    tld = _extract_domain(url).rsplit(".", 1)[-1].lower()
+    return "us" if tld in ("com", "net", "org", "io", "co") else tld
+
+
+def fetch_via_residential_proxy(target_url: str, target_country: str) -> str | None:
+    """
+    Phase 2 Fallback: routes a dynamically generated URL through a location-matched
+    residential proxy with a fresh session ID and a Chrome TLS fingerprint.
+
+    Returns raw HTML on HTTP 200, None on any error or non-200 status.
+    The caller is responsible for running is_cloudflare_challenge() on the result.
+    """
+    if not (_proxy_host and _proxy_username and _proxy_password):
+        return None
+
+    session_id = random.randint(100_000, 999_999)
+    proxy_user = f"{_proxy_username}_country-{target_country}_session-{session_id}_lifetime-5m"
+    proxy_url = f"http://{proxy_user}:{_proxy_password}@{_proxy_host}:{_proxy_port}"
+    proxies = {"http": proxy_url, "https": proxy_url}
+
+    try:
+        with Session(impersonate="chrome120") as s:
+            resp = s.get(
+                target_url,
+                proxies=proxies,
+                timeout=(_PROXY_CONNECT_TIMEOUT, _PROXY_READ_TIMEOUT),
+                headers=_headers_for_url(target_url),
+            )
+        if resp.status_code == 200:
+            return resp.text
+        logger.debug(
+            "[PROXY] country-%s returned HTTP %d for %s",
+            target_country, resp.status_code, target_url,
+        )
+        return None
+    except Exception as exc:
+        logger.debug("[PROXY] country-%s connection error for %s: %s", target_country, target_url, exc)
+        return None
+
+
 def _fetch_direct_sync(url: str, domain: str) -> dict:
     """
     Lazy-proxy curl_cffi fetch — two-attempt waterfall:
@@ -802,7 +865,11 @@ def _fetch_direct_sync(url: str, domain: str) -> dict:
                 resp = s.get(url, timeout=(_CONNECT_TIMEOUT, _READ_TIMEOUT), headers=headers)
             if resp.status_code == 200:
                 html = resp.text or ""
-                if not is_valid_product_page(html):
+                if is_cloudflare_challenge(html, 200):
+                    logger.warning("[SCRAPER] CF challenge (direct) for %s — escalating to proxy", url)
+                    html = ""
+                    escalate = True
+                elif not is_valid_product_page(html):
                     logger.warning(
                         "[SCRAPER] soft-block (direct) for %s (%d chars) — escalating to proxy",
                         url, len(html),
@@ -811,8 +878,12 @@ def _fetch_direct_sync(url: str, domain: str) -> dict:
                     escalate = True
                 # else: valid page — no escalation needed
             elif resp.status_code in (429, 403, 503):
-                logger.debug("[SCRAPER] HTTP %d (direct) for %s — escalating to proxy",
-                             resp.status_code, url)
+                if is_cloudflare_challenge("", resp.status_code):
+                    logger.debug("[SCRAPER] CF challenge HTTP %d (direct) for %s — escalating to proxy",
+                                 resp.status_code, url)
+                else:
+                    logger.debug("[SCRAPER] HTTP %d (direct) for %s — escalating to proxy",
+                                 resp.status_code, url)
                 escalate = True
             else:
                 logger.warning("HTTP %d for %s", resp.status_code, url)
@@ -825,6 +896,7 @@ def _fetch_direct_sync(url: str, domain: str) -> dict:
             escalate = True
 
     # ── Attempt 2: residential proxy ───────────────────────────────────────
+    cf_challenge = False
     blocked = False
     if escalate:
         if not _proxy_url:
@@ -840,27 +912,27 @@ def _fetch_direct_sync(url: str, domain: str) -> dict:
         delay = random.uniform(1.5, 3.0)
         logger.debug("[SCRAPER] proxy escalation for %s (%.1fs delay)", url, delay)
         time.sleep(delay)
-        try:
-            # chrome120 is the empirically tested fingerprint that bypasses DataDome
-            # (used by Decathlon, SportsDirect, etc.). Domain-specific overrides apply
-            # to direct connections only; all proxy calls use this fixed profile.
-            with Session(impersonate="chrome120") as s2:
-                r2 = s2.get(url, timeout=(_PROXY_CONNECT_TIMEOUT, _PROXY_READ_TIMEOUT),
-                            headers=headers, proxies=_proxies())
-            if r2.status_code == 200:
-                html = r2.text or ""
-                if not is_valid_product_page(html):
-                    logger.warning("[SCRAPER] soft-block even via proxy for %s", url)
-                    html = ""
-                    blocked = True
-            else:
-                logger.warning("HTTP %d (proxy) for %s", r2.status_code, url)
-                blocked = True
-        except Exception as exc:
-            logger.warning("Proxy fetch failed for %s: %s", url, exc)
+
+        # chrome120 bypasses DataDome (Decathlon, SportsDirect, etc.); country-matched
+        # session ID routes through a residential IP in the target market.
+        country = _country_for_url(url)
+        html = fetch_via_residential_proxy(url, country) or ""
+        if not html:
+            logger.warning("HTTP non-200 (proxy) for %s", url)
+            blocked = True
+        elif is_cloudflare_challenge(html, 200):
+            logger.warning("[WAF WALL] CF challenge via proxy for %s — dropping contender", url)
+            html = ""
+            cf_challenge = True
+            blocked = True
+        elif not is_valid_product_page(html):
+            logger.warning("[SCRAPER] soft-block even via proxy for %s", url)
+            html = ""
             blocked = True
 
     result = _parse_html(url, html)
+    if cf_challenge:
+        result["_cf_challenge"] = True
     if blocked:
         result["_blocked"] = True
     return result
@@ -1012,6 +1084,9 @@ def _fetch_one_sync(url: str) -> dict:
             return result
 
     # ── Step 5: Ghost Layer ──────────────────────────────────────────────────
+    if result.get("_cf_challenge"):
+        logger.info("[WATERFALL] CF challenge on live site — skipping ghost layer for %s", url)
+        return result
     logger.info("[WATERFALL] Steps 3+4 blocked — ghost layer → %s", url)
     result = _fetch_ghost_layer_sync(url)
     if result.get("markdown"):
