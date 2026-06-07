@@ -80,7 +80,7 @@ describe("PasskeyEnrollment", () => {
     });
   });
 
-  it("Face ID button: enrolls passkey, stores token, and redirects to /plan", async () => {
+  it("Face ID button: enrolls passkey, stores token, and redirects to /dashboard", async () => {
     jest.mocked(webauthn.enrollPasskey).mockResolvedValue({} as never);
     jest.mocked(api.registerPasskey).mockResolvedValue({ token: "test-jwt" });
 
@@ -94,13 +94,13 @@ describe("PasskeyEnrollment", () => {
       expect(webauthn.enrollPasskey).toHaveBeenCalled();
       expect(api.registerPasskey).toHaveBeenCalledWith("test@example.com", expect.anything());
       expect(mockSetItem).toHaveBeenCalledWith("smartshop_token", "test-jwt");
-      expect(mockPush).toHaveBeenCalledWith("/plan");
+      expect(mockPush).toHaveBeenCalledWith("/dashboard");
     });
 
     mockSetItem.mockRestore();
   });
 
-  it("Touch ID button: enrolls passkey, stores token, and redirects to /plan", async () => {
+  it("Touch ID button: enrolls passkey, stores token, and redirects to /dashboard", async () => {
     jest.mocked(webauthn.enrollPasskey).mockResolvedValue({} as never);
     jest.mocked(api.registerPasskey).mockResolvedValue({ token: "test-jwt" });
 
@@ -114,13 +114,13 @@ describe("PasskeyEnrollment", () => {
       expect(webauthn.enrollPasskey).toHaveBeenCalled();
       expect(api.registerPasskey).toHaveBeenCalledWith("test@example.com", expect.anything());
       expect(mockSetItem).toHaveBeenCalledWith("smartshop_token", "test-jwt");
-      expect(mockPush).toHaveBeenCalledWith("/plan");
+      expect(mockPush).toHaveBeenCalledWith("/dashboard");
     });
 
     mockSetItem.mockRestore();
   });
 
-  it("QR code button: passes cross-platform attachment and redirects to /plan", async () => {
+  it("QR code button: passes cross-platform attachment and redirects to /dashboard", async () => {
     jest.mocked(webauthn.enrollPasskey).mockResolvedValue({} as never);
     jest.mocked(api.registerPasskey).mockResolvedValue({ token: "test-jwt" });
 
@@ -133,7 +133,7 @@ describe("PasskeyEnrollment", () => {
       expect(calledOptions.authenticatorSelection?.authenticatorAttachment).toBe("cross-platform");
       expect(calledOptions.authenticatorSelection?.requireResidentKey).toBe(false);
       expect(calledOptions.authenticatorSelection?.userVerification).toBe("preferred");
-      expect(mockPush).toHaveBeenCalledWith("/plan");
+      expect(mockPush).toHaveBeenCalledWith("/dashboard");
     });
   });
 

@@ -1,6 +1,6 @@
 /**
  * Integration tests for the full new-user registration flow:
- *   RegisterForm → (magic link) → PasskeyEnrollment → PlanSelection → /dashboard
+ *   RegisterForm → (magic link) → PasskeyEnrollment → /dashboard
  *
  * Each sequence tests the state handoff between pages — sessionStorage,
  * localStorage, and navigation — the same way a real user traverses them.
@@ -10,7 +10,6 @@ import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import RegisterForm from "@/components/auth/RegisterForm";
 import PasskeyEnrollment from "@/components/auth/PasskeyEnrollment";
-import PlanSelection from "@/components/plan/PlanSelection";
 import * as api from "@/lib/api";
 import * as webauthn from "@/lib/webauthn";
 
@@ -26,13 +25,10 @@ jest.mock("@/lib/api", () => {
     ApiError,
     sendOtp: jest.fn(),
     registerPasskey: jest.fn(),
-    selectFreePlan: jest.fn(),
-    createProCheckout: jest.fn(),
     checkEmail: jest.fn(),
     getPasskeyChallenge: jest.fn(),
     verifyPasskey: jest.fn(),
     verifyMagicLink: jest.fn(),
-    getPlanStatus: jest.fn(),
   };
 });
 jest.mock("@/lib/webauthn");
@@ -236,7 +232,7 @@ describe("Registration flow — sequences", () => {
     });
   });
 
-  // Seq E: Face ID enrollment happy path → /plan
+  // Seq E: Face ID enrollment happy path → /dashboard
 
   it("Seq E: Face ID success → stores token in localStorage", async () => {
     sessionStorage.setItem("pending_email", "alice@example.com");
@@ -255,7 +251,7 @@ describe("Registration flow — sequences", () => {
     setItem.mockRestore();
   });
 
-  it("Seq E: Face ID success → redirects to /plan", async () => {
+  it("Seq E: Face ID success → redirects to /dashboard", async () => {
     sessionStorage.setItem("pending_email", "alice@example.com");
     sessionStorage.setItem("passkey_options", JSON.stringify({ challenge: "abc" }));
     jest.mocked(webauthn.enrollPasskey).mockResolvedValue({} as never);
@@ -266,7 +262,7 @@ describe("Registration flow — sequences", () => {
     fireEvent.click(screen.getByRole("button", { name: /set up with face id/i }));
 
     await waitFor(() => {
-      expect(mockPush).toHaveBeenCalledWith("/plan");
+      expect(mockPush).toHaveBeenCalledWith("/dashboard");
     });
   });
 
@@ -280,14 +276,14 @@ describe("Registration flow — sequences", () => {
     await waitFor(() => screen.getByRole("button", { name: /set up with face id/i }));
     fireEvent.click(screen.getByRole("button", { name: /set up with face id/i }));
 
-    await waitFor(() => expect(mockPush).toHaveBeenCalledWith("/plan"));
+    await waitFor(() => expect(mockPush).toHaveBeenCalledWith("/dashboard"));
     expect(sessionStorage.getItem("passkey_options")).toBeNull();
     expect(sessionStorage.getItem("pending_email")).toBeNull();
   });
 
-  // Seq F: Touch ID enrollment happy path → /plan
+  // Seq F: Touch ID enrollment happy path → /dashboard
 
-  it("Seq F: Touch ID success → stores token and redirects to /plan", async () => {
+  it("Seq F: Touch ID success → stores token and redirects to /dashboard", async () => {
     sessionStorage.setItem("pending_email", "alice@example.com");
     sessionStorage.setItem("passkey_options", JSON.stringify({ challenge: "abc" }));
     jest.mocked(webauthn.enrollPasskey).mockResolvedValue({} as never);
@@ -300,7 +296,7 @@ describe("Registration flow — sequences", () => {
 
     await waitFor(() => {
       expect(setItem).toHaveBeenCalledWith("smartshop_token", "jwt-touch");
-      expect(mockPush).toHaveBeenCalledWith("/plan");
+      expect(mockPush).toHaveBeenCalledWith("/dashboard");
     });
     setItem.mockRestore();
   });
@@ -324,7 +320,7 @@ describe("Registration flow — sequences", () => {
     expect(mockPush).not.toHaveBeenCalled();
   });
 
-  it("Seq G: after failure, retry with Face ID succeeds → /plan", async () => {
+  it("Seq G: after failure, retry with Face ID succeeds → /dashboard", async () => {
     sessionStorage.setItem("pending_email", "alice@example.com");
     sessionStorage.setItem("passkey_options", JSON.stringify({ challenge: "abc" }));
     jest.mocked(webauthn.enrollPasskey)
@@ -339,7 +335,7 @@ describe("Registration flow — sequences", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /set up with face id/i }));
     await waitFor(() => {
-      expect(mockPush).toHaveBeenCalledWith("/plan");
+      expect(mockPush).toHaveBeenCalledWith("/dashboard");
     });
   });
 
@@ -359,80 +355,4 @@ describe("Registration flow — sequences", () => {
     expect(mockPush).not.toHaveBeenCalled();
   });
 
-  // Seq H: PlanSelection reads localStorage token
-
-  it("Seq H: PlanSelection with no token → still renders buttons (calls API with empty string)", async () => {
-    localStorage.removeItem("smartshop_token");
-    jest.mocked(api.selectFreePlan).mockRejectedValue(new Error("Unauthorized"));
-    render(<PlanSelection />);
-    fireEvent.click(screen.getByRole("button", { name: /get started free/i }));
-    await waitFor(() => {
-      expect(api.selectFreePlan).toHaveBeenCalledWith("");
-    });
-  });
-
-  it("Seq H: PlanSelection free → API 401 → shows error", async () => {
-    localStorage.setItem("smartshop_token", "jwt");
-    jest.mocked(api.selectFreePlan).mockRejectedValue(new Error("Unauthorized"));
-    render(<PlanSelection />);
-    fireEvent.click(screen.getByRole("button", { name: /get started free/i }));
-    await waitFor(() => {
-      expect(screen.getByText(/unauthorized/i)).toBeInTheDocument();
-    });
-  });
-
-  // Seq I: Full component chain: enroll → free plan → /dashboard
-
-  it("Seq I: full chain — enroll (Face ID) → selectFreePlan → /dashboard", async () => {
-    // Step 1: PasskeyEnrollment
-    sessionStorage.setItem("pending_email", "alice@example.com");
-    sessionStorage.setItem("passkey_options", JSON.stringify({ challenge: "abc" }));
-    jest.mocked(webauthn.enrollPasskey).mockResolvedValue({} as never);
-    jest.mocked(api.registerPasskey).mockResolvedValue({ token: "chain-jwt" });
-
-    const { unmount } = render(<PasskeyEnrollment />);
-    await waitFor(() => screen.getByRole("button", { name: /set up with face id/i }));
-    fireEvent.click(screen.getByRole("button", { name: /set up with face id/i }));
-    await waitFor(() => {
-      expect(localStorage.getItem("smartshop_token")).toBe("chain-jwt");
-      expect(mockPush).toHaveBeenCalledWith("/plan");
-    });
-    unmount();
-
-    // Step 2: PlanSelection (user navigated to /plan)
-    jest.mocked(api.selectFreePlan).mockResolvedValue({ plan: "free", checkout_credits: 2 });
-    render(<PlanSelection />);
-    fireEvent.click(screen.getByRole("button", { name: /get started free/i }));
-    await waitFor(() => {
-      expect(api.selectFreePlan).toHaveBeenCalledWith("chain-jwt");
-      expect(mockPush).toHaveBeenCalledWith("/dashboard");
-    });
-  });
-
-  it("Seq I: full chain — enroll (Touch ID) → pro checkout → external redirect", async () => {
-    // Step 1: PasskeyEnrollment
-    sessionStorage.setItem("pending_email", "alice@example.com");
-    sessionStorage.setItem("passkey_options", JSON.stringify({ challenge: "abc" }));
-    jest.mocked(webauthn.enrollPasskey).mockResolvedValue({} as never);
-    jest.mocked(api.registerPasskey).mockResolvedValue({ token: "pro-jwt" });
-
-    const { unmount } = render(<PasskeyEnrollment />);
-    await waitFor(() => screen.getByRole("button", { name: /set up with touch id/i }));
-    fireEvent.click(screen.getByRole("button", { name: /set up with touch id/i }));
-    await waitFor(() => {
-      expect(localStorage.getItem("smartshop_token")).toBe("pro-jwt");
-    });
-    unmount();
-
-    // Step 2: PlanSelection → Pro
-    jest.mocked(api.createProCheckout).mockResolvedValue({
-      checkout_url: "https://checkout.lemonsqueezy.com/buy/pro",
-    });
-    render(<PlanSelection />);
-    fireEvent.click(screen.getByRole("button", { name: /upgrade to pro/i }));
-    await waitFor(() => {
-      expect(api.createProCheckout).toHaveBeenCalledWith("pro-jwt");
-      expect(window.location.href).toBe("https://checkout.lemonsqueezy.com/buy/pro");
-    });
-  });
 });

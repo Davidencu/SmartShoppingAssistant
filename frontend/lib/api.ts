@@ -89,22 +89,6 @@ export function verifyMagicLink(accessToken: string) {
   });
 }
 
-export function getPlanStatus(token: string) {
-  return request<{ plan: string; checkout_credits: number }>("/plan/status", {}, token);
-}
-
-export function selectFreePlan(token: string) {
-  return request<{ plan: string; checkout_credits: number }>(
-    "/plan/select",
-    { method: "POST", body: JSON.stringify({ plan: "free" }) },
-    token
-  );
-}
-
-export function createProCheckout(token: string) {
-  return request<{ checkout_url: string }>("/plan/checkout", { method: "POST" }, token);
-}
-
 // Search / Chat
 
 export interface ChatMessage {

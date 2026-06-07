@@ -2,14 +2,12 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Loader2, Zap } from "lucide-react";
+import { Loader2 } from "lucide-react";
 import ThemeToggle from "@/components/ThemeToggle";
-import { getPlanStatus, ApiError } from "@/lib/api";
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const [ready, setReady] = useState(false);
-  const [plan, setPlan] = useState<"free" | "pro" | null>(null);
 
   useEffect(() => {
     const token = localStorage.getItem("smartshop_token");
@@ -18,14 +16,6 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       return;
     }
     setReady(true);
-    getPlanStatus(token)
-      .then(({ plan }) => setPlan(plan as "free" | "pro"))
-      .catch((err) => {
-        if (err instanceof ApiError && err.status === 401) {
-          localStorage.removeItem("smartshop_token");
-          router.replace("/login");
-        }
-      });
   }, [router]);
 
   if (!ready) {
@@ -41,22 +31,6 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       <nav className="shrink-0 bg-white dark:bg-gray-800 border-b dark:border-gray-700 px-8 py-4 flex items-center justify-between">
         <div className="flex items-center gap-3">
           <span className="font-bold text-indigo-700 dark:text-indigo-400 text-xl">SmartShop</span>
-          {plan === "pro" && (
-            <span
-              data-testid="plan-badge"
-              className="flex items-center gap-1.5 text-sm font-semibold px-3 py-1 rounded-full bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300"
-            >
-              <Zap className="w-3.5 h-3.5" /> Pro
-            </span>
-          )}
-          {plan === "free" && (
-            <span
-              data-testid="plan-badge"
-              className="text-sm font-medium px-3 py-1 rounded-full bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400"
-            >
-              Free
-            </span>
-          )}
         </div>
         <div className="flex items-center gap-4">
           <button
@@ -64,12 +38,6 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             className="text-base text-gray-600 dark:text-gray-400 hover:text-indigo-600 dark:hover:text-indigo-400"
           >
             History
-          </button>
-          <button
-            onClick={() => router.push("/plan")}
-            className="text-base text-indigo-600 dark:text-indigo-400 hover:underline"
-          >
-            Plan
           </button>
           <ThemeToggle />
           <button

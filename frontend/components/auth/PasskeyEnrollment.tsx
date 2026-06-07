@@ -64,7 +64,7 @@ export default function PasskeyEnrollment() {
       sessionStorage.removeItem("pending_user_id");
       sessionStorage.removeItem("pending_email");
       sessionStorage.removeItem("register_email");
-      router.push("/plan");
+      router.push("/dashboard");
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Enrollment failed. Please try again.");
       setActiveMethod(null);

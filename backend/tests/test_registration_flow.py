@@ -1,13 +1,10 @@
 """
-Integration sequences for the full registration and plan-selection state machine.
-Tests the magic-link path: send-otp → verify-magic → passkey/register → plan/select|checkout.
+Integration sequences for the full registration state machine.
+Tests the magic-link path: send-otp → verify-magic → passkey/register → /dashboard.
 Each sequence exercises several endpoints as a chained client interaction, the same way
 a real frontend would drive them.
 """
-import hashlib
-import hmac
-import json
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from jose import jwt
@@ -26,14 +23,6 @@ def clean_auth_state():
     yield
     m._challenges.clear()
     m._registration_data.clear()
-
-
-@pytest.fixture(autouse=True)
-def reset_store_id():
-    import routers.plan as m
-    m._ls_store_id = None
-    yield
-    m._ls_store_id = None
 
 
 # Helpers
@@ -72,14 +61,6 @@ def _patch_passkey_verification(mocker):
     mv.sign_count = 0
     mocker.patch("routers.auth.verify_registration_response", return_value=mv)
     return mv
-
-
-def _webhook_body_and_sig(payload: dict) -> tuple[bytes, str]:
-    body = json.dumps(payload).encode()
-    sig = hmac.new(
-        settings.lemonsqueezy_webhook_secret.encode(), body, hashlib.sha256
-    ).hexdigest()
-    return body, sig
 
 
 def _no_profile(mock_supabase):
@@ -145,7 +126,7 @@ class TestFullRegistrationToFreePlan:
         assert "alice@example.com" not in m._challenges
         assert "alice@example.com" not in m._registration_data
 
-    def test_seq_A_full_chain_to_free_plan(self, client, mock_supabase, mocker):
+    def test_seq_A_full_chain_to_dashboard(self, client, mock_supabase, mocker):
         import routers.auth as m
         # send-otp
         _no_profile(mock_supabase)
@@ -156,94 +137,14 @@ class TestFullRegistrationToFreePlan:
         mock_supabase.table.return_value.insert.return_value.execute.return_value = MagicMock()
         verify_resp = client.post("/auth/verify-magic", json={"access_token": "tok"})
         assert verify_resp.status_code == 200
-        # passkey/register
+        # passkey/register → token issued, user lands on /dashboard
         _patch_passkey_verification(mocker)
         reg_resp = client.post(
             "/auth/passkey/register",
             json={"email": "alice@example.com", "credential": {"id": "x", "type": "public-key"}},
         )
         assert reg_resp.status_code == 200
-        token = reg_resp.json()["token"]
-        # plan/select free
-        mock_supabase.table.return_value.update.return_value.eq.return_value.execute.return_value = MagicMock()
-        plan_resp = client.post(
-            "/plan/select", json={"plan": "free"},
-            headers={"Authorization": f"Bearer {token}"},
-        )
-        assert plan_resp.status_code == 200
-        assert plan_resp.json() == {"plan": "free", "checkout_credits": 2}
-
-
-# Seq B – Full happy path: register → pro plan via checkout + webhook
-
-class TestFullRegistrationToProPlan:
-
-    def _register_and_get_token(self, client, mock_supabase, mocker) -> str:
-        import routers.auth as m
-        _no_profile(mock_supabase)
-        _patch_otp_send(mocker)
-        client.post("/auth/send-otp", json=REG)
-        _patch_magic_link(mocker, "user-uuid-b", "alice@example.com")
-        mock_supabase.table.return_value.insert.return_value.execute.return_value = MagicMock()
-        client.post("/auth/verify-magic", json={"access_token": "tok"})
-        _patch_passkey_verification(mocker)
-        resp = client.post(
-            "/auth/passkey/register",
-            json={"email": "alice@example.com", "credential": {"id": "x", "type": "public-key"}},
-        )
-        return resp.json()["token"]
-
-    def test_seq_B_checkout_url_returned(self, client, mock_supabase, mocker):
-        import routers.plan as plan_module
-        token = self._register_and_get_token(client, mock_supabase, mocker)
-        plan_module._ls_store_id = "store-x"
-
-        with patch("routers.plan.httpx.AsyncClient") as mock_cls:
-            mock_resp = MagicMock(status_code=201)
-            mock_resp.json.return_value = {
-                "data": {"attributes": {"url": "https://checkout.ls.com/pro"}}
-            }
-            mock_ac = AsyncMock()
-            mock_ac.post = AsyncMock(return_value=mock_resp)
-            mock_ac.__aenter__ = AsyncMock(return_value=mock_ac)
-            mock_ac.__aexit__ = AsyncMock(return_value=None)
-            mock_cls.return_value = mock_ac
-            resp = client.post("/plan/checkout", headers={"Authorization": f"Bearer {token}"})
-
-        assert resp.status_code == 200
-        assert resp.json()["checkout_url"] == "https://checkout.ls.com/pro"
-
-    def test_seq_B_webhook_upgrades_plan_to_pro(self, client, mock_supabase, mocker):
-        token = self._register_and_get_token(client, mock_supabase, mocker)
-        mock_supabase.table.return_value.update.return_value.eq.return_value.execute.return_value = MagicMock()
-
-        payload = {"meta": {"event_name": "order_created", "custom_data": {"user_id": "user-uuid-b"}}}
-        body, sig = _webhook_body_and_sig(payload)
-        resp = client.post(
-            "/webhooks/lemonsqueezy", content=body,
-            headers={"X-Signature": sig, "Content-Type": "application/json"},
-        )
-        assert resp.status_code == 200
-        mock_supabase.table.return_value.update.assert_called_with({"plan": "pro"})
-
-    def test_seq_B_plan_status_reflects_pro_after_webhook(self, client, mock_supabase, mocker):
-        token = self._register_and_get_token(client, mock_supabase, mocker)
-        mock_supabase.table.return_value.update.return_value.eq.return_value.execute.return_value = MagicMock()
-
-        payload = {"meta": {"event_name": "subscription_created", "custom_data": {"user_id": "user-uuid-b"}}}
-        body, sig = _webhook_body_and_sig(payload)
-        client.post(
-            "/webhooks/lemonsqueezy", content=body,
-            headers={"X-Signature": sig, "Content-Type": "application/json"},
-        )
-
-        mock_supabase.table.return_value.select.return_value.eq.return_value.execute.return_value.data = [
-            {"plan": "pro", "checkout_credits": 0}
-        ]
-        resp = client.get("/plan/status", headers={"Authorization": f"Bearer {token}"})
-        assert resp.status_code == 200
-        assert resp.json()["plan"] == "pro"
-        assert resp.json()["checkout_credits"] == 0
+        assert "token" in reg_resp.json()
 
 
 # Seq C – Duplicate email blocked at send-otp
@@ -397,17 +298,17 @@ class TestJwtIntegrity:
         ).json()["token"]
 
         mock_supabase.table.return_value.select.return_value.eq.return_value.execute.return_value.data = [
-            {"plan": "free", "checkout_credits": 2}
+            {"entries": []}
         ]
-        resp = client.get("/plan/status", headers={"Authorization": f"Bearer {token}"})
+        resp = client.get("/search/history", headers={"Authorization": f"Bearer {token}"})
         assert resp.status_code == 200
 
     def test_tampered_token_rejected(self, client):
-        resp = client.get("/plan/status", headers={"Authorization": "Bearer tampered.jwt.token"})
+        resp = client.get("/search/history", headers={"Authorization": "Bearer tampered.jwt.token"})
         assert resp.status_code == 401
 
     def test_missing_token_rejected(self, client):
-        resp = client.get("/plan/status")
+        resp = client.get("/search/history")
         assert resp.status_code == 401
 
 
@@ -446,178 +347,3 @@ class TestConcurrentRegistrations:
         assert m._registration_data["alice@example.com"]["city"] == "New City"
 
 
-# Plan endpoint integration
-
-class TestPlanEndpointIntegration:
-
-    def test_seq_K_plan_status_missing_auth(self, client):
-        assert client.get("/plan/status").status_code == 401
-
-    def test_seq_K_plan_status_invalid_jwt(self, client):
-        assert client.get(
-            "/plan/status", headers={"Authorization": "Bearer bad.jwt"}
-        ).status_code == 401
-
-    def test_seq_K_plan_status_free_user(self, client, mock_supabase, auth_token):
-        mock_supabase.table.return_value.select.return_value.eq.return_value.execute.return_value.data = [
-            {"plan": "free", "checkout_credits": 2}
-        ]
-        resp = client.get("/plan/status", headers={"Authorization": f"Bearer {auth_token}"})
-        assert resp.status_code == 200
-        assert resp.json() == {"plan": "free", "checkout_credits": 2}
-
-    def test_seq_K_plan_status_pro_user(self, client, mock_supabase, auth_token):
-        mock_supabase.table.return_value.select.return_value.eq.return_value.execute.return_value.data = [
-            {"plan": "pro", "checkout_credits": 0}
-        ]
-        resp = client.get("/plan/status", headers={"Authorization": f"Bearer {auth_token}"})
-        assert resp.json() == {"plan": "pro", "checkout_credits": 0}
-
-    def test_seq_L_plan_select_pro_blocked_with_422(self, client, auth_token):
-        resp = client.post(
-            "/plan/select", json={"plan": "pro"},
-            headers={"Authorization": f"Bearer {auth_token}"},
-        )
-        assert resp.status_code == 422
-
-    def test_seq_L_plan_select_free_accepted(self, client, mock_supabase, auth_token):
-        mock_supabase.table.return_value.update.return_value.eq.return_value.execute.return_value = MagicMock()
-        resp = client.post(
-            "/plan/select", json={"plan": "free"},
-            headers={"Authorization": f"Bearer {auth_token}"},
-        )
-        assert resp.status_code == 200
-        assert resp.json()["plan"] == "free"
-
-    def test_seq_M_checkout_store_id_cached_across_calls(self, client, auth_token):
-        import routers.plan as plan_module
-        plan_module._ls_store_id = None
-
-        store_resp = MagicMock(status_code=200)
-        store_resp.json.return_value = {"data": [{"id": "fetched-id"}]}
-        checkout_resp = MagicMock(status_code=201)
-        checkout_resp.json.return_value = {"data": {"attributes": {"url": "https://checkout.ls.com"}}}
-
-        with patch("routers.plan.httpx.AsyncClient") as mock_cls:
-            mock_ac = AsyncMock()
-            mock_ac.get = AsyncMock(return_value=store_resp)
-            mock_ac.post = AsyncMock(return_value=checkout_resp)
-            mock_ac.__aenter__ = AsyncMock(return_value=mock_ac)
-            mock_ac.__aexit__ = AsyncMock(return_value=None)
-            mock_cls.return_value = mock_ac
-
-            client.post("/plan/checkout", headers={"Authorization": f"Bearer {auth_token}"})
-            assert mock_ac.get.call_count == 1
-            assert plan_module._ls_store_id == "fetched-id"
-
-            # Second call: store_id cached, no GET
-            client.post("/plan/checkout", headers={"Authorization": f"Bearer {auth_token}"})
-            assert mock_ac.get.call_count == 1
-
-    def test_seq_M_checkout_store_fetch_failure_returns_502(self, client, auth_token):
-        import routers.plan as plan_module
-        plan_module._ls_store_id = None
-
-        with patch("routers.plan.httpx.AsyncClient") as mock_cls:
-            mock_ac = AsyncMock()
-            mock_ac.get = AsyncMock(return_value=MagicMock(status_code=503))
-            mock_ac.__aenter__ = AsyncMock(return_value=mock_ac)
-            mock_ac.__aexit__ = AsyncMock(return_value=None)
-            mock_cls.return_value = mock_ac
-            resp = client.post("/plan/checkout", headers={"Authorization": f"Bearer {auth_token}"})
-
-        assert resp.status_code == 502
-
-    def test_seq_M_checkout_ls_creation_failure_returns_502(self, client, auth_token):
-        import routers.plan as plan_module
-        plan_module._ls_store_id = "store-123"
-
-        with patch("routers.plan.httpx.AsyncClient") as mock_cls:
-            mock_ac = AsyncMock()
-            mock_ac.post = AsyncMock(return_value=MagicMock(status_code=422))
-            mock_ac.__aenter__ = AsyncMock(return_value=mock_ac)
-            mock_ac.__aexit__ = AsyncMock(return_value=None)
-            mock_cls.return_value = mock_ac
-            resp = client.post("/plan/checkout", headers={"Authorization": f"Bearer {auth_token}"})
-
-        assert resp.status_code == 502
-
-    def test_seq_M_checkout_empty_store_list_returns_502(self, client, auth_token):
-        import routers.plan as plan_module
-        plan_module._ls_store_id = None
-
-        store_resp = MagicMock(status_code=200)
-        store_resp.json.return_value = {"data": []}  # no stores
-
-        with patch("routers.plan.httpx.AsyncClient") as mock_cls:
-            mock_ac = AsyncMock()
-            mock_ac.get = AsyncMock(return_value=store_resp)
-            mock_ac.__aenter__ = AsyncMock(return_value=mock_ac)
-            mock_ac.__aexit__ = AsyncMock(return_value=None)
-            mock_cls.return_value = mock_ac
-            resp = client.post("/plan/checkout", headers={"Authorization": f"Bearer {auth_token}"})
-
-        assert resp.status_code == 502
-
-
-# Seq N/O – Webhook integration
-
-class TestWebhookIntegration:
-
-    def test_seq_N_order_created_upgrades_plan(self, client, mock_supabase):
-        mock_supabase.table.return_value.update.return_value.eq.return_value.execute.return_value = MagicMock()
-        payload = {"meta": {"event_name": "order_created", "custom_data": {"user_id": "uid"}}}
-        body, sig = _webhook_body_and_sig(payload)
-        resp = client.post(
-            "/webhooks/lemonsqueezy", content=body,
-            headers={"X-Signature": sig, "Content-Type": "application/json"},
-        )
-        assert resp.status_code == 200
-        mock_supabase.table.return_value.update.assert_called_with({"plan": "pro"})
-
-    def test_seq_O_subscription_created_also_upgrades(self, client, mock_supabase):
-        mock_supabase.table.return_value.update.return_value.eq.return_value.execute.return_value = MagicMock()
-        payload = {"meta": {"event_name": "subscription_created", "custom_data": {"user_id": "uid"}}}
-        body, sig = _webhook_body_and_sig(payload)
-        resp = client.post(
-            "/webhooks/lemonsqueezy", content=body,
-            headers={"X-Signature": sig, "Content-Type": "application/json"},
-        )
-        assert resp.status_code == 200
-        mock_supabase.table.return_value.update.assert_called_with({"plan": "pro"})
-
-    def test_seq_O_webhook_replay_idempotent(self, client, mock_supabase):
-        """Receiving the same webhook twice both succeed (DB upsert is idempotent)."""
-        mock_supabase.table.return_value.update.return_value.eq.return_value.execute.return_value = MagicMock()
-        payload = {"meta": {"event_name": "order_created", "custom_data": {"user_id": "uid"}}}
-        body, sig = _webhook_body_and_sig(payload)
-        headers = {"X-Signature": sig, "Content-Type": "application/json"}
-        assert client.post("/webhooks/lemonsqueezy", content=body, headers=headers).status_code == 200
-        assert client.post("/webhooks/lemonsqueezy", content=body, headers=headers).status_code == 200
-
-    def test_webhook_invalid_signature_blocked(self, client):
-        body = json.dumps({"meta": {"event_name": "order_created"}}).encode()
-        resp = client.post(
-            "/webhooks/lemonsqueezy", content=body,
-            headers={"X-Signature": "bad", "Content-Type": "application/json"},
-        )
-        assert resp.status_code == 401
-
-    def test_webhook_missing_user_id_returns_400(self, client):
-        payload = {"meta": {"event_name": "order_created", "custom_data": {}}}
-        body, sig = _webhook_body_and_sig(payload)
-        resp = client.post(
-            "/webhooks/lemonsqueezy", content=body,
-            headers={"X-Signature": sig, "Content-Type": "application/json"},
-        )
-        assert resp.status_code == 400
-
-    def test_webhook_unknown_event_ignored(self, client):
-        payload = {"meta": {"event_name": "refund_created"}}
-        body, sig = _webhook_body_and_sig(payload)
-        resp = client.post(
-            "/webhooks/lemonsqueezy", content=body,
-            headers={"X-Signature": sig, "Content-Type": "application/json"},
-        )
-        assert resp.status_code == 200
-        assert resp.json() == {"message": "ok"}

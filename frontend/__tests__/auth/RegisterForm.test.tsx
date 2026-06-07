@@ -21,9 +21,6 @@ jest.mock("@/lib/api", () => {
     getPasskeyChallenge: jest.fn(),
     verifyPasskey: jest.fn(),
     verifyMagicLink: jest.fn(),
-    getPlanStatus: jest.fn(),
-    selectFreePlan: jest.fn(),
-    createProCheckout: jest.fn(),
   };
 });
 
