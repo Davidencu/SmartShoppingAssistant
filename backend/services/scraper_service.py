@@ -844,10 +844,13 @@ def fetch_via_residential_proxy(target_url: str, target_country: str) -> str | N
             )
         if resp.status_code == 200:
             return resp.text
-        logger.error("[PROXY FATAL ERROR] %s", repr(exc))
+        logger.debug(
+            "[PROXY] country-%s returned HTTP %d for %s",
+            target_country, resp.status_code, target_url,
+        )
         return None
     except Exception as exc:
-        logger.debug("[PROXY] country-%s connection error for %s: %s", target_country, target_url, exc)
+        logger.error("[PROXY FATAL ERROR] %s", repr(exc))
         return None
 
 
