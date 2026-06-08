@@ -544,7 +544,7 @@ def _extract_text_bs4(html: str) -> str:
     so Gemini sees spec tables, review excerpts, and feature bullets.
     """
     try:
-        soup = BeautifulSoup(html, "lxml")
+        soup = BeautifulSoup(html, "lxml-xml")
     except Exception:
         return ""
     for noise in soup(["script", "style", "nav", "footer", "header", "aside",

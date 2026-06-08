@@ -603,6 +603,23 @@ async def _run_product_pipeline(
         if dropped:
             logger.info("[P1/TAVILY] dropped %d excluded URL(s)", dropped)
 
+    # ── STRICT DOMAIN ENFORCEMENT (The Bouncer) ──────────────────────────
+    # Tavily's include_domains is a soft hint. We must hard-filter the results
+    # so mainstream aggregators never leak into our niche-first execution passes.
+    if local_domains:
+        before_strict = len(tavily_results)
+        strict_results = []
+        for r in tavily_results:
+            domain = urlparse(r["url"]).netloc.replace("www.", "")
+            if any(req_domain in domain for req_domain in local_domains):
+                strict_results.append(r)
+            else:
+                logger.warning("[P1/TAVILY] Bouncer dropped leaked domain: %s", domain)
+        tavily_results = strict_results
+        dropped_strict = before_strict - len(tavily_results)
+        if dropped_strict:
+            logger.info("[P1/TAVILY] Strict domain lock enforced. Dropped %d leaked URLs.", dropped_strict)
+
     # Drop category/listing/search URLs — only scrape product detail pages
     before_shape = len(tavily_results)
     tavily_results = [r for r in tavily_results if is_likely_product_url(r["url"])]
