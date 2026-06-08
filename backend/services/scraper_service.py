@@ -827,7 +827,7 @@ def fetch_via_residential_proxy(target_url: str, target_country: str) -> str | N
         return None
 
     session_id = random.randint(100_000, 999_999)
-    proxy_user = f"{_proxy_username}_country-{target_country}_session-{session_id}_lifetime-5m"
+    proxy_user = f"customer-{_proxy_username}_country-{target_country}_session-{session_id}_lifetime-5m"
     proxy_url = f"http://{proxy_user}:{_proxy_password}@{_proxy_host}:{_proxy_port}"
     proxies = {"http": proxy_url, "https": proxy_url}
 
