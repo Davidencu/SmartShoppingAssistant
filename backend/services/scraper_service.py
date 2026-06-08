@@ -831,8 +831,8 @@ def fetch_via_residential_proxy(target_url: str, target_country: str) -> str | N
     proxy_url = f"http://{proxy_user}:{_proxy_password}@{_proxy_host}:{_proxy_port}"
     proxies = {"http": proxy_url, "https": proxy_url}
 
-    logger.warning(f"DEBUG PROXY STRING: {proxy_user}")
-    logger.warning(f"DEBUG TIMEOUT: {_PROXY_CONNECT_TIMEOUT}")
+    # logger.warning(f"DEBUG PROXY STRING: {proxy_user}")
+    # logger.warning(f"DEBUG TIMEOUT: {_PROXY_CONNECT_TIMEOUT}")
 
     try:
         with Session(impersonate="chrome120") as s:
