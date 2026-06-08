@@ -569,7 +569,9 @@ def _extract_text_bs4(html: str) -> str:
 _CAT_PATH_RE = re.compile(
     r"/(?:"
     # ── Categories / Collections / Catalog ───────────────────────────────────
-    r"c|s|cat|category|categories|"
+    # NOTE: single-letter 'c', 's', 'w' removed — too many niche shops use them
+    # as benign routing prefixes (e.g. /c/ for color, /w/ for wide fit)
+    r"cat|category|categories|"
     r"categorie|kategorie|kategori|kategoria|"           # FR / DE / SE-NO-DK / PL
     r"department|dept|collections|"
     r"catalog|catalogo|catalogue|katalog|catalogus|"     # EN / ES-IT / FR / DE-PL / NL
@@ -634,6 +636,7 @@ def is_likely_product_url(url: str) -> bool:
                                    ".csv", ".txt", ".zip", ".xml")):
             return False
         if _CAT_PATH_RE.search(path):
+            logger.debug("[SHAPE FILTER] Dropped URL due to category path match: %s", url)
             return False
         if query and _CAT_PARAM_RE.search("?" + query):
             return False
