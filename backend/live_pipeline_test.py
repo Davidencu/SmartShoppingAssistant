@@ -43,10 +43,50 @@ SEP2 = "─" * 90
 SEP3 = "·" * 90
 
 _OUT_OF_STOCK_SIGNALS = frozenset({
+    # English
     "outofstock", "out of stock", "out-of-stock",
+    "sold out", "unavailable", "currently unavailable", "no longer available",
+    "temporarily out of stock",
+    # Romanian
     "indisponibil", "stoc epuizat", "stoc 0",
-    "rupture de stock", "nicht verfügbar", "agotado",
-    "sold out", "unavailable",
+    # French
+    "rupture de stock", "indisponible", "en rupture",
+    # German
+    "nicht verfügbar", "nicht vorrätig", "ausverkauft", "vergriffen",
+    # Spanish
+    "agotado", "no disponible", "sin stock",
+    # Italian
+    "esaurito", "non disponibile", "non disponible",
+    # Polish
+    "niedostępny", "brak w magazynie", "brak towaru", "wyprzedany",
+    # Dutch (NL/BE)
+    "niet op voorraad", "uitverkocht", "niet beschikbaar",
+    # Portuguese (PT/BR)
+    "esgotado", "indisponível", "sem stock", "fora de estoque",
+    # Swedish
+    "slut i lager", "tillfälligt slut", "ej i lager",
+    # Norwegian
+    "ikke på lager", "utsolgt",
+    # Danish
+    "udsolgt",
+    # Finnish
+    "ei varastossa", "loppunut",
+    # Czech / Slovak
+    "není skladem", "nedostupné", "vyprodáno", "nie je na sklade",
+    # Hungarian
+    "elfogyott", "nem elérhető", "nincs készleten",
+    # Greek
+    "μη διαθέσιμο", "εξαντλήθηκε",
+    # Turkish
+    "stokta yok", "tükendi",
+    # Russian
+    "нет в наличии", "нет на складе",
+    # Japanese
+    "在庫切れ", "品切れ",
+    # Korean
+    "품절",
+    # Chinese (simplified)
+    "缺货", "无货",
 })
 
 
@@ -58,7 +98,7 @@ def _pick_contenders_verbose(scraped, budget_max, n=10):
         md   = s.get("markdown") or ""
         jld  = s.get("jsonld") or {}
         avail = (jld.get("availability") or "").lower()
-        md_head = md[:600].lower()
+        md_head = md[:1500].lower()
 
         if len(md) <= 200:
             reasons.append(f"THIN_CONTENT ({len(md)} chars ≤ 200)")

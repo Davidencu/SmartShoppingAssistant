@@ -138,6 +138,32 @@ def get_global_domains() -> list[str]:
         return []
 
 
+def get_global_niche_domains() -> list[str]:
+    """Return only niche/specialty GLOBAL-tagged domains (reverb.com, sweetwater.com, etc.).
+    Used for the combined local+global niche pass — lighter anti-bot, no proxy needed."""
+    _ensure_fresh()
+    return list(_niche_domains_by_country.get("GLOBAL", []))
+
+
+def get_global_mainstream_domains() -> list[str]:
+    """Return GLOBAL mainstream domains (Amazon, eBay, AliExpress, etc.) excluding niche ones.
+    Used as the last-resort fallback after niche and local passes have failed."""
+    _ensure_fresh()
+    global_all = _domains_by_country.get("GLOBAL", [])
+    niche_set = frozenset(_niche_domains_by_country.get("GLOBAL", []))
+    mainstream = [d for d in global_all if d not in niche_set]
+    if mainstream:
+        return mainstream
+    # If tier data not yet populated fall back to the full global list
+    if global_all:
+        return list(global_all)
+    try:
+        from services.tavily_service import _GLOBAL_ECOMMERCE_DOMAINS
+        return list(_GLOBAL_ECOMMERCE_DOMAINS)
+    except Exception:
+        return []
+
+
 def _bare_domain(raw: str) -> str:
     """Strip scheme and www. from a URL or bare domain so lookups always match."""
     m = re.search(r"(?:https?://)?(?:www\.)?([^/?#]+)", raw or "")

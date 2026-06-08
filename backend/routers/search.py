@@ -353,10 +353,50 @@ def _t(lang: str, key: str, **kwargs) -> str:
 
 
 _OUT_OF_STOCK_SIGNALS = frozenset({
+    # English
     "outofstock", "out of stock", "out-of-stock",
+    "sold out", "unavailable", "currently unavailable", "no longer available",
+    "temporarily out of stock",
+    # Romanian
     "indisponibil", "stoc epuizat", "stoc 0",
-    "rupture de stock", "nicht verfügbar", "agotado",
-    "sold out", "unavailable",
+    # French
+    "rupture de stock", "indisponible", "en rupture",
+    # German
+    "nicht verfügbar", "nicht vorrätig", "ausverkauft", "vergriffen",
+    # Spanish
+    "agotado", "no disponible", "sin stock",
+    # Italian
+    "esaurito", "non disponibile", "non disponible",
+    # Polish
+    "niedostępny", "brak w magazynie", "brak towaru", "wyprzedany",
+    # Dutch (NL/BE)
+    "niet op voorraad", "uitverkocht", "niet beschikbaar",
+    # Portuguese (PT/BR)
+    "esgotado", "indisponível", "sem stock", "fora de estoque",
+    # Swedish
+    "slut i lager", "tillfälligt slut", "ej i lager",
+    # Norwegian
+    "ikke på lager", "utsolgt",
+    # Danish
+    "udsolgt",
+    # Finnish
+    "ei varastossa", "loppunut",
+    # Czech / Slovak
+    "není skladem", "nedostupné", "vyprodáno", "nie je na sklade",
+    # Hungarian
+    "elfogyott", "nem elérhető", "nincs készleten",
+    # Greek
+    "μη διαθέσιμο", "εξαντλήθηκε",
+    # Turkish
+    "stokta yok", "tükendi",
+    # Russian
+    "нет в наличии", "нет на складе",
+    # Japanese
+    "在庫切れ", "品切れ",
+    # Korean
+    "품절",
+    # Chinese (simplified)
+    "缺货", "无货",
 })
 
 
@@ -382,7 +422,7 @@ def _pick_contenders(
         avail = ((s.get("jsonld") or {}).get("availability") or "").lower()
         if avail and any(sig in avail for sig in _OUT_OF_STOCK_SIGNALS):
             return False
-        md_head = (s.get("markdown") or "")[:600].lower()
+        md_head = (s.get("markdown") or "")[:1500].lower()
         return not any(sig in md_head for sig in _OUT_OF_STOCK_SIGNALS)
 
     def _in_budget(s: dict) -> bool:
@@ -920,11 +960,22 @@ async def chat(
                 logger.warning("[RESEARCH] phase failed, continuing without: %s", _research_exc)
 
             # ── 5. Niche-first pipeline ─────────────────────────────────────
-            # 5a. Mid-market / specialty stores (better scrapability, good JSON-LD)
+            # 5a. Local niche + global niche combined.
+            # Niche/mid-market sites have lighter anti-bot measures and richer
+            # JSON-LD — combining both geographies maximises coverage without
+            # touching proxy-required mainstream domains.
             ranked: list[dict] = []
-            if niche_domains and not search_globally:
+            global_niche = retailers_service.get_global_niche_domains()
+            if search_globally:
+                combined_niche: list[str] | None = global_niche or None
+            else:
+                combined_niche = list(dict.fromkeys(
+                    (niche_domains or []) + global_niche
+                )) or None
+
+            if combined_niche:
                 ranked = await _run_product_pipeline(
-                    deterministic_query, collected_params, city, country, niche_domains,
+                    deterministic_query, collected_params, city, country, combined_niche,
                     excluded_urls or None, is_global=False,
                     on_event=emit, user_language=detected_language,
                     excluded_keywords=excluded_keywords or None,
@@ -934,16 +985,16 @@ async def chat(
                     no_global_supplement=True,
                 )
 
-            # 5b. Mainstream country stores when niche returns nothing
-            niche_set = frozenset(niche_domains or [])
-            all_set = frozenset(local_domains or [])
-            if not ranked:
-                if niche_domains and niche_set != all_set:
+            # 5b. Local mainstream when niche pass returns nothing.
+            # Only relevant for country-scoped searches; global searches skip
+            # straight to the global mainstream fallback below.
+            if not ranked and not search_globally:
+                if combined_niche:
                     await emit({"type": "status",
                                 "message": _t(detected_language, "mainstream_try")})
                 ranked = await _run_product_pipeline(
                     deterministic_query, collected_params, city, country, local_domains,
-                    excluded_urls or None, is_global=search_globally,
+                    excluded_urls or None, is_global=False,
                     on_event=emit, user_language=detected_language,
                     excluded_keywords=excluded_keywords or None,
                     price_floor=price_floor,
@@ -951,16 +1002,17 @@ async def chat(
                     specific_models=specific_models,
                 )
 
-            # ── 6. Global fallback ───────────────────────────────────────────
-            # Uses DB global domains (Amazon, eBay, AliExpress, …) explicitly so
-            # Tavily's search is still constrained to e-commerce retailers.
+            # ── 6. Global mainstream fallback ────────────────────────────────
+            # Amazon, eBay, AliExpress, etc. — proxy-heavy, but last resort.
+            # Only global mainstream domains are used here; niche ones were
+            # already tried in 5a so there is no point re-querying them.
             fallback_message: str | None = None
-            if not ranked and local_domains:
-                logger.info("[SEARCH] local scoring returned empty — retrying globally")
+            if not ranked and (local_domains or search_globally):
+                logger.info("[SEARCH] niche+local scoring empty — retrying global mainstream")
                 await emit({"type": "status", "message": _t(detected_language, "global")})
-                global_domains = retailers_service.get_global_domains() or None
+                global_mainstream = retailers_service.get_global_mainstream_domains() or None
                 ranked = await _run_product_pipeline(
-                    deterministic_query, collected_params, city, country, global_domains,
+                    deterministic_query, collected_params, city, country, global_mainstream,
                     excluded_urls or None, is_global=True,
                     on_event=emit, user_language=detected_language,
                     excluded_keywords=excluded_keywords or None,
