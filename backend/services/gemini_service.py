@@ -480,9 +480,12 @@ RULE 4 — USE A SPECIFIC MODEL NAME, never a generic category.
 ## Local Domain Selection (SEARCH intent only)
 Populate local_domains with 3–5 e-commerce domains that best serve the user's location
 and product category. Rules:
-- Choose domains that are popular and well-stocked IN the user's country.
-- Match the domain to the category: prefer specialist retailers over generalists when relevant
-  (e.g. decathlon.ro for sports equipment, emag.ro for electronics, elefant.ro for books).
+- CRITICAL: You MUST prioritise independent, mid-market, and niche specialist retailers 
+  (e.g., afisport.ro, pcgarage.ro, notino.ro, tradeinn.com).
+- LIMIT massive enterprise aggregators: You may include a MAXIMUM of ONE giant enterprise 
+  domain (like emag.ro, amazon.com, walmart.com, decathlon) as a fallback. 
+  The rest of the array MUST be mid-market or independent specialists.
+- Match the domain to the category (e.g., bike24.com for sports, elefant.ro for books).
 - Only include domains where the user's budget currency is the standard checkout currency.
 - If the user's location is unknown or no suitable local domains exist, set local_domains to null.
 For CHAT/CLARIFY intent: always null.
