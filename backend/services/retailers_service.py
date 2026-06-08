@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 # ── In-memory TTL cache ───────────────────────────────────────────────────────
 _LOCK = threading.Lock()
 _domains_by_country: dict[str, list[str]] = {}
+_niche_domains_by_country: dict[str, list[str]] = {}
 _proxy_domains: frozenset[str] = frozenset()
 _last_refresh: float = 0.0
 _TTL = 300.0  # seconds
@@ -68,28 +69,35 @@ def country_name_to_iso(name: str) -> str:
 
 def _refresh() -> None:
     """Reload all active retailers from Supabase. Called when cache is stale."""
-    global _domains_by_country, _proxy_domains, _last_refresh
+    global _domains_by_country, _niche_domains_by_country, _proxy_domains, _last_refresh
     try:
         from services.supabase_service import get_supabase_admin
         rows = (
             get_supabase_admin()
             .table("supported_retailers")
-            .select("domain,target_country,requires_proxy")
+            .select("domain,target_country,requires_proxy,tier")
             .eq("is_active", True)
             .execute()
             .data or []
         )
         by_country: dict[str, list[str]] = {}
+        niche: dict[str, list[str]] = {}
         proxy: set[str] = set()
         for row in rows:
             by_country.setdefault(row["target_country"], []).append(row["domain"])
-            if row["requires_proxy"]:
+            if row.get("tier") == "niche":
+                niche.setdefault(row["target_country"], []).append(row["domain"])
+            if row.get("requires_proxy"):
                 proxy.add(row["domain"])
         with _LOCK:
             _domains_by_country = by_country
+            _niche_domains_by_country = niche
             _proxy_domains = frozenset(proxy)
             _last_refresh = time.monotonic()
-        logger.info("[RETAILERS] loaded %d active retailers from DB", len(rows))
+        logger.info(
+            "[RETAILERS] loaded %d active retailers (%d niche) from DB",
+            len(rows), sum(len(v) for v in niche.values()),
+        )
     except Exception as exc:
         logger.warning("[RETAILERS] DB refresh failed (using cache/fallback): %s", exc)
 
@@ -102,9 +110,17 @@ def _ensure_fresh() -> None:
 # ── Public API ────────────────────────────────────────────────────────────────
 
 def get_domains_for_country(country_code: str) -> list[str]:
-    """Return active retailer domains for a given ISO country code (e.g. 'RO', 'DE')."""
+    """Return all active retailer domains for a given ISO country code (e.g. 'RO', 'DE')."""
     _ensure_fresh()
     return list(_domains_by_country.get(country_code.upper(), []))
+
+
+def get_niche_domains_for_country(country_code: str) -> list[str]:
+    """Return only mid-market/specialty (tier='niche') domains for a country.
+    Used for the niche-first search pass — these sites have lighter anti-bot
+    measures and richer JSON-LD than mainstream platforms like Amazon or eMag."""
+    _ensure_fresh()
+    return list(_niche_domains_by_country.get(country_code.upper(), []))
 
 
 def get_global_domains() -> list[str]:

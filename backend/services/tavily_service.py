@@ -12,38 +12,50 @@ _client = TavilyClient(api_key=settings.tavily_api_key)
 # Prevents Tavily from surfacing Reddit threads, Wikipedia, review blogs, or
 # news articles when the user is asking for a product to buy.
 _GLOBAL_ECOMMERCE_DOMAINS: list[str] = [
-    # ── North America ────────────────────────────────────────────────────────
-    "amazon.com", "walmart.com", "target.com", "bestbuy.com", "newegg.com",
-    "bhphotovideo.com", "adorama.com", "costco.com", "macys.com",
-    "nordstrom.com", "apple.com", "nike.com", "adidas.com",
-    # ── UK ───────────────────────────────────────────────────────────────────
-    "amazon.co.uk", "currys.co.uk", "argos.co.uk", "johnlewis.com",
-    "asos.com", "ebay.co.uk",
-    # ── Germany / Austria ────────────────────────────────────────────────────
+    # ── North America niche/specialty ────────────────────────────────────────
+    "bhphotovideo.com", "adorama.com", "newegg.com", "overstock.com",
+    "wayfair.com", "rei.com", "chewy.com", "sweetwater.com", "microcenter.com",
+    # ── North America mainstream ──────────────────────────────────────────────
+    "amazon.com", "walmart.com", "target.com", "bestbuy.com",
+    "costco.com", "macys.com", "nordstrom.com", "apple.com", "nike.com", "adidas.com",
+    # ── UK niche ─────────────────────────────────────────────────────────────
+    "scan.co.uk", "ebuyer.com", "overclockers.co.uk", "laptopsdirect.co.uk",
+    # ── UK mainstream ─────────────────────────────────────────────────────────
+    "amazon.co.uk", "currys.co.uk", "argos.co.uk", "johnlewis.com", "asos.com",
+    # ── Germany niche ────────────────────────────────────────────────────────
+    "alternate.de", "notebooksbilliger.de", "cyberport.de", "mindfactory.de",
+    "reichelt.de", "euronics.de",
+    # ── Germany mainstream ────────────────────────────────────────────────────
     "amazon.de", "mediamarkt.de", "saturn.de", "otto.de", "zalando.de",
-    "alternate.de", "notebooksbilliger.de", "cyberport.de", "ebay.de",
-    # ── France ───────────────────────────────────────────────────────────────
-    "amazon.fr", "fnac.fr", "cdiscount.com", "darty.com", "boulanger.com",
-    "ebay.fr", "zalando.fr",
+    # ── France niche ─────────────────────────────────────────────────────────
+    "fnac.fr", "ldlc.com", "topachat.com", "rueducommerce.fr",
+    # ── France mainstream ─────────────────────────────────────────────────────
+    "amazon.fr", "cdiscount.com", "darty.com", "boulanger.com", "zalando.fr",
     # ── Italy ────────────────────────────────────────────────────────────────
-    "amazon.it", "mediaworld.it", "unieuro.it", "ebay.it",
+    "amazon.it", "euronics.it", "trony.it", "mediaworld.it", "unieuro.it",
     # ── Spain ────────────────────────────────────────────────────────────────
-    "amazon.es", "pccomponentes.com", "mediamarkt.es", "ebay.es",
-    # ── Poland ───────────────────────────────────────────────────────────────
-    "amazon.pl", "allegro.pl", "morele.net", "x-kom.pl", "mediaexpert.pl",
+    "pccomponentes.com", "fnac.es", "amazon.es", "mediamarkt.es",
+    # ── Poland niche ─────────────────────────────────────────────────────────
+    "morele.net", "x-kom.pl", "mediaexpert.pl",
+    # ── Poland mainstream ─────────────────────────────────────────────────────
+    "amazon.pl", "allegro.pl",
     # ── Netherlands / Belgium ────────────────────────────────────────────────
     "amazon.nl", "coolblue.nl", "bol.com", "mediamarkt.nl",
-    # ── Romania ──────────────────────────────────────────────────────────────
-    "emag.ro", "altex.ro", "pcgarage.ro", "flanco.ro", "cel.ro",
-    "elefant.ro", "dedeman.ro",
+    # ── Romania niche ────────────────────────────────────────────────────────
+    "pcgarage.ro", "evomag.ro",
+    # ── Romania mainstream ────────────────────────────────────────────────────
+    "emag.ro", "altex.ro", "flanco.ro", "cel.ro",
     # ── Czech / Slovakia ─────────────────────────────────────────────────────
-    "alza.cz", "alza.sk",
-    # ── Nordics ──────────────────────────────────────────────────────────────
-    "amazon.se", "webhallen.com", "komplett.no", "power.fi",
-    # ── Global / multi-region ────────────────────────────────────────────────
+    "alza.cz", "czc.cz", "alza.sk",
+    # ── Nordics niche ────────────────────────────────────────────────────────
+    "webhallen.com", "komplett.no", "komplett.se", "digitec.ch", "galaxus.ch",
+    # ── Nordics mainstream ────────────────────────────────────────────────────
+    "amazon.se", "power.fi",
+    # ── Global niche ─────────────────────────────────────────────────────────
+    "decathlon.com", "zappos.com", "reverb.com", "backcountry.com",
+    # ── Global mainstream ─────────────────────────────────────────────────────
     "amazon.ca", "amazon.com.au", "amazon.co.jp", "amazon.in",
-    "ebay.com", "zalando.com", "hm.com", "uniqlo.com", "decathlon.com",
-    "aliexpress.com", "jd.com",
+    "ebay.com", "zalando.com", "hm.com", "uniqlo.com", "aliexpress.com",
 ]
 
 

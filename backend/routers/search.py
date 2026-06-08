@@ -167,17 +167,18 @@ _ISO_TO_LANGUAGE: dict[str, str] = {
 # Translated status messages keyed by ISO 639-1 code then message key
 _STATUS_I18N: dict[str, dict[str, str]] = {
     "en": {
-        "intent":        "Classifying intent...",
-        "researching":   "Researching community recommendations...",
-        "cache":         "Checking cache...",
-        "search":        "Searching for products...",
-        "found_pages":   "Found {n} page{s} — opening {stores}...",
-        "browsed":       "Browsed {store} ({done}/{total})",
-        "found_prods":   "Found {n} product{s} within budget — calculating scores...",
-        "scoring":       "Scoring with AI...",
-        "global":        "Trying global search...",
-        "suggestions":   "Generating suggestions...",
-        "results_header": "Here are the top products ranked by value score:",
+        "intent":           "Classifying intent...",
+        "researching":      "Researching community recommendations...",
+        "cache":            "Checking cache...",
+        "search":           "Searching for products...",
+        "found_pages":      "Found {n} page{s} — opening {stores}...",
+        "browsed":          "Browsed {store} ({done}/{total})",
+        "found_prods":      "Found {n} product{s} within budget — calculating scores...",
+        "scoring":          "Scoring with AI...",
+        "mainstream_try":   "Nothing in specialty stores — trying mainstream retailers...",
+        "global":           "Trying global search...",
+        "suggestions":      "Generating suggestions...",
+        "results_header":   "Here are the top products ranked by value score:",
         "fallback": (
             "I couldn't find this product on local retailers — all results were "
             "out of stock or didn't meet your criteria. "
@@ -185,17 +186,18 @@ _STATUS_I18N: dict[str, dict[str, str]] = {
         ),
     },
     "ro": {
-        "intent":        "Clasificăm intenția...",
-        "researching":   "Cercetăm recomandările comunității...",
-        "cache":         "Verificăm cache-ul...",
-        "search":        "Căutăm produse...",
-        "found_pages":   "Am găsit {n} pagini — deschidem {stores}...",
-        "browsed":       "Am navigat pe {store} ({done}/{total})",
-        "found_prods":   "Am găsit {n} produse în buget — calculăm scorurile...",
-        "scoring":       "Scorăm cu AI...",
-        "global":        "Încercăm căutarea globală...",
-        "suggestions":   "Generăm sugestii...",
-        "results_header": "Iată cele mai bune produse clasate după scorul de valoare:",
+        "intent":           "Clasificăm intenția...",
+        "researching":      "Cercetăm recomandările comunității...",
+        "cache":            "Verificăm cache-ul...",
+        "search":           "Căutăm produse...",
+        "found_pages":      "Am găsit {n} pagini — deschidem {stores}...",
+        "browsed":          "Am navigat pe {store} ({done}/{total})",
+        "found_prods":      "Am găsit {n} produse în buget — calculăm scorurile...",
+        "scoring":          "Scorăm cu AI...",
+        "mainstream_try":   "Nimic în magazine specializate — încercăm magazinele mari...",
+        "global":           "Încercăm căutarea globală...",
+        "suggestions":      "Generăm sugestii...",
+        "results_header":   "Iată cele mai bune produse clasate după scorul de valoare:",
         "fallback": (
             "Nu am găsit acest produs la magazinele locale — toate rezultatele "
             "erau epuizate sau nu corespundeau criteriilor tale. "
@@ -203,17 +205,18 @@ _STATUS_I18N: dict[str, dict[str, str]] = {
         ),
     },
     "de": {
-        "intent":        "Intent wird klassifiziert...",
-        "researching":   "Community-Empfehlungen werden recherchiert...",
-        "cache":         "Cache wird geprüft...",
-        "search":        "Produkte werden gesucht...",
-        "found_pages":   "{n} Seiten gefunden — {stores} wird geöffnet...",
-        "browsed":       "{store} durchsucht ({done}/{total})",
-        "found_prods":   "{n} Produkte im Budget — Bewertungen werden berechnet...",
-        "scoring":       "KI-Bewertung läuft...",
-        "global":        "Globale Suche wird versucht...",
-        "suggestions":   "Vorschläge werden generiert...",
-        "results_header": "Hier sind die besten Produkte nach Wert-Score:",
+        "intent":           "Intent wird klassifiziert...",
+        "researching":      "Community-Empfehlungen werden recherchiert...",
+        "cache":            "Cache wird geprüft...",
+        "search":           "Produkte werden gesucht...",
+        "found_pages":      "{n} Seiten gefunden — {stores} wird geöffnet...",
+        "browsed":          "{store} durchsucht ({done}/{total})",
+        "found_prods":      "{n} Produkte im Budget — Bewertungen werden berechnet...",
+        "scoring":          "KI-Bewertung läuft...",
+        "mainstream_try":   "Nichts bei Fachhändlern — große Händler werden versucht...",
+        "global":           "Globale Suche wird versucht...",
+        "suggestions":      "Vorschläge werden generiert...",
+        "results_header":   "Hier sind die besten Produkte nach Wert-Score:",
         "fallback": (
             "Ich konnte dieses Produkt bei lokalen Händlern nicht finden — "
             "alle Ergebnisse waren ausverkauft oder entsprachen nicht deinen Kriterien. "
@@ -221,17 +224,18 @@ _STATUS_I18N: dict[str, dict[str, str]] = {
         ),
     },
     "fr": {
-        "intent":        "Classification de l'intention...",
-        "researching":   "Recherche de recommandations de la communauté...",
-        "cache":         "Vérification du cache...",
-        "search":        "Recherche de produits...",
-        "found_pages":   "{n} pages trouvées — ouverture de {stores}...",
-        "browsed":       "{store} parcouru ({done}/{total})",
-        "found_prods":   "{n} produits dans le budget — calcul des scores...",
-        "scoring":       "Notation par IA...",
-        "global":        "Tentative de recherche mondiale...",
-        "suggestions":   "Génération de suggestions...",
-        "results_header": "Voici les meilleurs produits classés par score de valeur :",
+        "intent":           "Classification de l'intention...",
+        "researching":      "Recherche de recommandations de la communauté...",
+        "cache":            "Vérification du cache...",
+        "search":           "Recherche de produits...",
+        "found_pages":      "{n} pages trouvées — ouverture de {stores}...",
+        "browsed":          "{store} parcouru ({done}/{total})",
+        "found_prods":      "{n} produits dans le budget — calcul des scores...",
+        "scoring":          "Notation par IA...",
+        "mainstream_try":   "Rien chez les spécialistes — essai des grands distributeurs...",
+        "global":           "Tentative de recherche mondiale...",
+        "suggestions":      "Génération de suggestions...",
+        "results_header":   "Voici les meilleurs produits classés par score de valeur :",
         "fallback": (
             "Je n'ai pas trouvé ce produit chez les revendeurs locaux — tous les résultats "
             "étaient épuisés ou ne correspondaient pas à vos critères. "
@@ -239,17 +243,18 @@ _STATUS_I18N: dict[str, dict[str, str]] = {
         ),
     },
     "it": {
-        "intent":        "Classificazione dell'intenzione...",
-        "researching":   "Ricerca delle raccomandazioni della community...",
-        "cache":         "Controllo della cache...",
-        "search":        "Ricerca prodotti...",
-        "found_pages":   "{n} pagine trovate — apertura di {stores}...",
-        "browsed":       "{store} navigato ({done}/{total})",
-        "found_prods":   "{n} prodotti nel budget — calcolo punteggi...",
-        "scoring":       "Valutazione con AI...",
-        "global":        "Tentativo di ricerca globale...",
-        "suggestions":   "Generazione di suggerimenti...",
-        "results_header": "Ecco i migliori prodotti classificati per punteggio di valore:",
+        "intent":           "Classificazione dell'intenzione...",
+        "researching":      "Ricerca delle raccomandazioni della community...",
+        "cache":            "Controllo della cache...",
+        "search":           "Ricerca prodotti...",
+        "found_pages":      "{n} pagine trovate — apertura di {stores}...",
+        "browsed":          "{store} navigato ({done}/{total})",
+        "found_prods":      "{n} prodotti nel budget — calcolo punteggi...",
+        "scoring":          "Valutazione con AI...",
+        "mainstream_try":   "Nessun risultato negli store specializzati — provo i grandi rivenditori...",
+        "global":           "Tentativo di ricerca globale...",
+        "suggestions":      "Generazione di suggerimenti...",
+        "results_header":   "Ecco i migliori prodotti classificati per punteggio di valore:",
         "fallback": (
             "Non ho trovato questo prodotto nei negozi locali — tutti i risultati erano "
             "esauriti o non soddisfacevano i tuoi criteri. "
@@ -257,17 +262,18 @@ _STATUS_I18N: dict[str, dict[str, str]] = {
         ),
     },
     "es": {
-        "intent":        "Clasificando la intención...",
-        "researching":   "Investigando recomendaciones de la comunidad...",
-        "cache":         "Comprobando la caché...",
-        "search":        "Buscando productos...",
-        "found_pages":   "{n} páginas encontradas — abriendo {stores}...",
-        "browsed":       "{store} navegado ({done}/{total})",
-        "found_prods":   "{n} productos dentro del presupuesto — calculando puntuaciones...",
-        "scoring":       "Puntuación con IA...",
-        "global":        "Intentando búsqueda global...",
-        "suggestions":   "Generando sugerencias...",
-        "results_header": "Aquí están los mejores productos clasificados por puntuación de valor:",
+        "intent":           "Clasificando la intención...",
+        "researching":      "Investigando recomendaciones de la comunidad...",
+        "cache":            "Comprobando la caché...",
+        "search":           "Buscando productos...",
+        "found_pages":      "{n} páginas encontradas — abriendo {stores}...",
+        "browsed":          "{store} navegado ({done}/{total})",
+        "found_prods":      "{n} productos dentro del presupuesto — calculando puntuaciones...",
+        "scoring":          "Puntuación con IA...",
+        "mainstream_try":   "Sin resultados en tiendas especializadas — probando grandes tiendas...",
+        "global":           "Intentando búsqueda global...",
+        "suggestions":      "Generando sugerencias...",
+        "results_header":   "Aquí están los mejores productos clasificados por puntuación de valor:",
         "fallback": (
             "No encontré este producto en tiendas locales — todos los resultados estaban "
             "agotados o no cumplían tus criterios. "
@@ -275,17 +281,18 @@ _STATUS_I18N: dict[str, dict[str, str]] = {
         ),
     },
     "pl": {
-        "intent":        "Klasyfikacja intencji...",
-        "researching":   "Wyszukiwanie rekomendacji społeczności...",
-        "cache":         "Sprawdzanie pamięci podręcznej...",
-        "search":        "Szukam produktów...",
-        "found_pages":   "Znaleziono {n} stron — otwieranie {stores}...",
-        "browsed":       "Przeglądnięto {store} ({done}/{total})",
-        "found_prods":   "Znaleziono {n} produktów w budżecie — obliczanie wyników...",
-        "scoring":       "Ocenianie przez AI...",
-        "global":        "Próba globalnego wyszukiwania...",
-        "suggestions":   "Generowanie sugestii...",
-        "results_header": "Oto najlepsze produkty według wyniku wartości:",
+        "intent":           "Klasyfikacja intencji...",
+        "researching":      "Wyszukiwanie rekomendacji społeczności...",
+        "cache":            "Sprawdzanie pamięci podręcznej...",
+        "search":           "Szukam produktów...",
+        "found_pages":      "Znaleziono {n} stron — otwieranie {stores}...",
+        "browsed":          "Przeglądnięto {store} ({done}/{total})",
+        "found_prods":      "Znaleziono {n} produktów w budżecie — obliczanie wyników...",
+        "scoring":          "Ocenianie przez AI...",
+        "mainstream_try":   "Nic w sklepach specjalistycznych — próba dużych sklepów...",
+        "global":           "Próba globalnego wyszukiwania...",
+        "suggestions":      "Generowanie sugestii...",
+        "results_header":   "Oto najlepsze produkty według wyniku wartości:",
         "fallback": (
             "Nie znalazłem tego produktu w lokalnych sklepach — wszystkie wyniki były "
             "niedostępne lub nie spełniały Twoich kryteriów. "
@@ -293,17 +300,18 @@ _STATUS_I18N: dict[str, dict[str, str]] = {
         ),
     },
     "nl": {
-        "intent":        "Intentie wordt geclassificeerd...",
-        "researching":   "Community-aanbevelingen worden onderzocht...",
-        "cache":         "Cache wordt gecontroleerd...",
-        "search":        "Producten worden gezocht...",
-        "found_pages":   "{n} pagina's gevonden — {stores} wordt geopend...",
-        "browsed":       "{store} doorzocht ({done}/{total})",
-        "found_prods":   "{n} producten binnen budget — scores worden berekend...",
-        "scoring":       "AI-scoring...",
-        "global":        "Wereldwijde zoekopdracht proberen...",
-        "suggestions":   "Suggesties worden gegenereerd...",
-        "results_header": "Hier zijn de beste producten gerangschikt op waardepunt:",
+        "intent":           "Intentie wordt geclassificeerd...",
+        "researching":      "Community-aanbevelingen worden onderzocht...",
+        "cache":            "Cache wordt gecontroleerd...",
+        "search":           "Producten worden gezocht...",
+        "found_pages":      "{n} pagina's gevonden — {stores} wordt geopend...",
+        "browsed":          "{store} doorzocht ({done}/{total})",
+        "found_prods":      "{n} producten binnen budget — scores worden berekend...",
+        "scoring":          "AI-scoring...",
+        "mainstream_try":   "Niets bij gespecialiseerde winkels — grote retailers worden geprobeerd...",
+        "global":           "Wereldwijde zoekopdracht proberen...",
+        "suggestions":      "Suggesties worden gegenereerd...",
+        "results_header":   "Hier zijn de beste producten gerangschikt op waardepunt:",
         "fallback": (
             "Ik kon dit product niet vinden bij lokale retailers — alle resultaten waren "
             "uitverkocht of voldeden niet aan uw criteria. "
@@ -311,17 +319,18 @@ _STATUS_I18N: dict[str, dict[str, str]] = {
         ),
     },
     "pt": {
-        "intent":        "Classificando a intenção...",
-        "researching":   "Pesquisando recomendações da comunidade...",
-        "cache":         "Verificando o cache...",
-        "search":        "Pesquisando produtos...",
-        "found_pages":   "{n} páginas encontradas — abrindo {stores}...",
-        "browsed":       "{store} navegado ({done}/{total})",
-        "found_prods":   "{n} produtos dentro do orçamento — calculando pontuações...",
-        "scoring":       "Pontuação com IA...",
-        "global":        "Tentando pesquisa global...",
-        "suggestions":   "Gerando sugestões...",
-        "results_header": "Aqui estão os melhores produtos classificados por pontuação de valor:",
+        "intent":           "Classificando a intenção...",
+        "researching":      "Pesquisando recomendações da comunidade...",
+        "cache":            "Verificando o cache...",
+        "search":           "Pesquisando produtos...",
+        "found_pages":      "{n} páginas encontradas — abrindo {stores}...",
+        "browsed":          "{store} navegado ({done}/{total})",
+        "found_prods":      "{n} produtos dentro do orçamento — calculando pontuações...",
+        "scoring":          "Pontuação com IA...",
+        "mainstream_try":   "Nada em lojas especializadas — tentando grandes varejistas...",
+        "global":           "Tentando pesquisa global...",
+        "suggestions":      "Gerando sugestões...",
+        "results_header":   "Aqui estão os melhores produtos classificados por pontuação de valor:",
         "fallback": (
             "Não encontrei este produto em lojas locais — todos os resultados estavam "
             "esgotados ou não atendiam aos seus critérios. "
@@ -482,6 +491,7 @@ async def _run_product_pipeline(
     price_floor: float | None = None,
     community_picks: list[str] | None = None,
     specific_models: list[str] | None = None,
+    no_global_supplement: bool = False,
 ) -> list[dict]:
     """
     3-phase pipeline:
@@ -519,9 +529,10 @@ async def _run_product_pipeline(
         )
         logger.info("[P1/TAVILY] local (%s): %d results", ", ".join(local_domains), len(tavily_results))
 
-    if len(tavily_results) == 0 and not is_global:
+    if len(tavily_results) == 0 and not is_global and not no_global_supplement:
         # Supplement with global e-commerce domains when local/model searches come up empty.
-        # Skipped for is_global=True runs (already using global domains as local_domains).
+        # Skipped for is_global=True runs and for the niche-first pass (no_global_supplement=True)
+        # so the caller can try mainstream country domains before jumping straight to global.
         supplement_domains = retailers_service.get_global_domains() or None
         if specific_models:
             seen_pdp = {r["url"] for r in tavily_results}
@@ -825,24 +836,30 @@ async def chat(
             # Domain resolution: DB is authoritative, Gemini's hint is fallback.
             # supported_retailers table maps ISO country codes → active domains +
             # proxy requirements, so we never need to hardcode retailer lists.
+            # niche_domains = mid-market/specialty tier (searched first — better
+            # scrapability and JSON-LD than mainstream platforms like Amazon/eMag).
             country_code = retailers_service.country_name_to_iso(country) if country else ""
             if search_globally:
+                niche_domains: list[str] | None = None
                 local_domains = None
             elif not country_code:
-                # Unknown country — use Gemini's domain hint rather than going straight global
+                # Unknown country — use Gemini's domain hint; no niche split available
+                niche_domains = None
                 local_domains = gemini_domains or None
             else:
                 db_domains = retailers_service.get_domains_for_country(country_code)
+                niche_domains = retailers_service.get_niche_domains_for_country(country_code) or None
                 local_domains = db_domains or gemini_domains or None
 
             deterministic_query, local_domains = _build_search_query(
                 gemini_localized_query, collected_params, local_domains
             )
             logger.info(
-                "[SEARCH] query=%r  country_code=%r  domains=%r  city=%r  country=%r  "
+                "[SEARCH] query=%r  country_code=%r  niche=%d  all=%d  city=%r  country=%r  "
                 "excluded=%d  global=%s  refinement=%s",
-                deterministic_query, country_code, local_domains, city, country,
-                len(excluded_urls), search_globally, is_refinement,
+                deterministic_query, country_code,
+                len(niche_domains or []), len(local_domains or []),
+                city, country, len(excluded_urls), search_globally, is_refinement,
             )
 
             await emit({"type": "status", "message": _t(detected_language, "cache")})
@@ -902,16 +919,37 @@ async def chat(
             except Exception as _research_exc:
                 logger.warning("[RESEARCH] phase failed, continuing without: %s", _research_exc)
 
-            # ── 5. Full pipeline (local domains first) ──────────────────────
-            ranked = await _run_product_pipeline(
-                deterministic_query, collected_params, city, country, local_domains,
-                excluded_urls or None, is_global=search_globally,
-                on_event=emit, user_language=detected_language,
-                excluded_keywords=excluded_keywords or None,
-                price_floor=price_floor,
-                community_picks=community_picks or None,
-                specific_models=specific_models,
-            )
+            # ── 5. Niche-first pipeline ─────────────────────────────────────
+            # 5a. Mid-market / specialty stores (better scrapability, good JSON-LD)
+            ranked: list[dict] = []
+            if niche_domains and not search_globally:
+                ranked = await _run_product_pipeline(
+                    deterministic_query, collected_params, city, country, niche_domains,
+                    excluded_urls or None, is_global=False,
+                    on_event=emit, user_language=detected_language,
+                    excluded_keywords=excluded_keywords or None,
+                    price_floor=price_floor,
+                    community_picks=community_picks or None,
+                    specific_models=specific_models,
+                    no_global_supplement=True,
+                )
+
+            # 5b. Mainstream country stores when niche returns nothing
+            niche_set = frozenset(niche_domains or [])
+            all_set = frozenset(local_domains or [])
+            if not ranked:
+                if niche_domains and niche_set != all_set:
+                    await emit({"type": "status",
+                                "message": _t(detected_language, "mainstream_try")})
+                ranked = await _run_product_pipeline(
+                    deterministic_query, collected_params, city, country, local_domains,
+                    excluded_urls or None, is_global=search_globally,
+                    on_event=emit, user_language=detected_language,
+                    excluded_keywords=excluded_keywords or None,
+                    price_floor=price_floor,
+                    community_picks=community_picks or None,
+                    specific_models=specific_models,
+                )
 
             # ── 6. Global fallback ───────────────────────────────────────────
             # Uses DB global domains (Amazon, eBay, AliExpress, …) explicitly so
