@@ -628,6 +628,7 @@ def is_likely_product_url(url: str) -> bool:
         if _SKU_RE.search(url):
             return True
         if depth >= 2 and len(segments[-1]) > 10:
+            logger.info("[GATEKEEPER] Allowed depth>=2 product: %s", url)
             return True
         if depth == 1 and any(char.isdigit() for char in segments[0] if char in "-_"):
             return True
@@ -948,6 +949,8 @@ def _fetch_direct_sync(url: str, domain: str) -> dict:
             blocked = True
 
     result = _parse_html(url, html)
+    if not blocked and not cf_challenge:
+        logger.info("[WATERFALL] Success 200 OK via curl_cffi direct: %s", url) # Add this line
     if cf_challenge:
         result["_cf_challenge"] = True
     if blocked:
@@ -1063,6 +1066,7 @@ def _fetch_one_sync(url: str) -> dict:
     # ── Step 1: DB cache ────────────────────────────────────────────────────
     cached = _db_cache_get(url)
     if cached:
+        logger.info("[WATERFALL] Cache Hit - returning data for: %s", url)
         return cached
 
     # ── Steps 3 + 4: live network fetch ─────────────────────────────────────
