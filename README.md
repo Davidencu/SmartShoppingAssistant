@@ -18,14 +18,13 @@ SmartShop is a full-stack AI shopping assistant built around a simple idea: the 
 8. [Multi-Layer Structured Data Extraction](#multi-layer-structured-data-extraction)
 9. [Autonomous Logistics Discovery](#autonomous-logistics-discovery)
 10. [Network Performance Under Load](#network-performance-under-load)
-11. [Plan & Billing](#plan--billing)
-12. [Frontend](#frontend)
-13. [Database Schema](#database-schema)
-14. [Project Structure](#project-structure)
-15. [Local Setup](#local-setup)
-16. [Environment Variables](#environment-variables)
-17. [Running Tests](#running-tests)
-18. [Architectural Rules](#architectural-rules)
+11. [Frontend](#frontend)
+12. [Database Schema](#database-schema)
+13. [Project Structure](#project-structure)
+14. [Local Setup](#local-setup)
+15. [Environment Variables](#environment-variables)
+16. [Running Tests](#running-tests)
+17. [Architectural Rules](#architectural-rules)
 
 ---
 
@@ -36,35 +35,40 @@ SmartShop is a full-stack AI shopping assistant built around a simple idea: the 
 │                         BROWSER (Next.js)                               │
 │                                                                         │
 │  ┌──────────────┐   ┌───────────────────┐   ┌────────────────────────┐ │
-│  │  Auth Pages  │   │  Chat Interface   │   │   History / Plan Pages │ │
+│  │  Auth Pages  │   │  Chat Interface   │   │   History Page         │ │
 │  │  (Passkey /  │   │  (messages +      │   │                        │ │
 │  │   OTP email) │   │  product cards)   │   │                        │ │
 │  └──────┬───────┘   └────────┬──────────┘   └────────────────────────┘ │
 └─────────┼────────────────────┼─────────────────────────────────────────┘
-          │ JWT (Bearer)        │ POST /search/chat
+          │ JWT (Bearer)        │ POST /search/chat (SSE stream)
           ▼                     ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                        FastAPI Backend                                  │
 │                                                                         │
-│  ┌──────────────┐  ┌──────────────────┐  ┌────────┐  ┌─────────────┐  │
-│  │ /auth router │  │ /search router   │  │ /plan  │  │ /webhooks   │  │
-│  │  WebAuthn    │  │  Intent gate     │  │ router │  │ LemonSqueezy│  │
-│  │  OTP email   │  │  Cache check     │  │        │  │ webhook     │  │
-│  │  JWT issue   │  │  3-phase funnel  │  │        │  │             │  │
-│  └──────┬───────┘  └────────┬─────────┘  └───┬────┘  └─────────────┘  │
-│         │                   │                 │                         │
-│         ▼                   ▼                 ▼                         │
+│  ┌──────────────┐  ┌──────────────────┐  ┌─────────────┐              │
+│  │ /auth router │  │ /search router   │  │             │              │
+│  │  WebAuthn    │  │  Intent gate     │  │             │              │
+│  │  OTP email   │  │  Cache check     │  │             │              │
+│  │  JWT issue   │  │  Niche-first     │  │             │              │
+│  └──────┬───────┘  │  pipeline (SSE)  │  └─────────────┘              │
+│         │          └────────┬─────────┘                                │
+│         │                   │                                          │
+│         ▼                   ▼                                          │
 │  ┌─────────────────────────────────────────────────────────────────┐   │
 │  │                      Services Layer                             │   │
 │  │                                                                 │   │
 │  │  gemini_service   tavily_service   scraper_service              │   │
 │  │  (intent/score/   (product URL     (CF swarm → direct/lazy     │   │
 │  │   embeddings +     discovery)       residential proxy →         │   │
-│  │   Groq fallback)                    ghost layer + Bloom/LRU)   │   │
+│  │   research agent + Groq fallback)   ghost layer + Bloom/LRU)   │   │
 │  │                                                                 │   │
-│  │  jsonld_service        cache_service       supabase_service     │   │
-│  │  (Schema.org           (pgvector           (admin client        │   │
-│  │   extraction)           semantic cache)     singleton)          │   │
+│  │  retailers_service     jsonld_service      cache_service        │   │
+│  │  (DB-backed domain     (Schema.org         (pgvector            │   │
+│  │   registry, 5-min TTL   extraction)         semantic cache)     │   │
+│  │   niche/mainstream                                              │   │
+│  │   tiers, proxy flags)  logistics_data      supabase_service     │   │
+│  │                        (deterministic       (admin client        │   │
+│  │                         shipping registry)   singleton)         │   │
 │  └──────────────────────────┬──────────────────────────────────────┘   │
 └─────────────────────────────┼───────────────────────────────────────────┘
                               │
@@ -74,11 +78,15 @@ SmartShop is a full-stack AI shopping assistant built around a simple idea: the 
  │    Supabase      │  │   Gemini 2.5     │  │  Tavily Search   │  │  Groq   │
  │  (PostgreSQL +   │  │   Flash API      │  │  (advanced mode, │  │ (Llama  │
  │   pgvector)      │  │  (intent, score, │  │  optional domain │  │ 3.3-70B │
- │                  │  │   embeddings)    │  │  pinning)        │  │ fallback│
- │  profiles        │  └──────────────────┘  └──────────────────┘  └─────────┘
- │  passkeys        │
+ │                  │  │   embeddings,    │  │  pinning)        │  │ fallback│
+ │  profiles        │  │   research agent)│  └──────────────────┘  └─────────┘
+ │  passkeys        │  └──────────────────┘
  │  search_cache    │
  │  chat_history    │
+ │  supported_      │
+ │  retailers       │
+ │  scrape_cache    │
+ │  hostile_domains │
  └──────────────────┘
 ```
 
@@ -97,7 +105,6 @@ SmartShop is a full-stack AI shopping assistant built around a simple idea: the 
 | Web Search | Tavily (advanced search depth, optional domain filtering) |
 | Web Scraping | `curl_cffi` (6-profile Chrome/Edge stealth rotation) + lazy residential proxy (IPRoyal — direct-first, escalate on failure) + Cloudflare Worker Swarm + `BeautifulSoup4` / `lxml` (JSON-LD + `__NEXT_DATA__` extraction) |
 | Authentication | WebAuthn / Passkeys (FIDO2 biometric) + OTP email via Supabase |
-| Billing | Lemon Squeezy (Merchant of Record — handles global VAT/taxes) |
 
 ---
 
@@ -164,6 +171,8 @@ SmartShop uses a two-phase registration: email ownership is verified first (OTP)
 
 Every search message passes through a five-stage pipeline. If any stage fails or finds nothing useful, the system degrades gracefully — retrying globally, explaining why nothing was found, or returning a partial result — rather than showing an error page.
 
+Results are streamed to the frontend via **Server-Sent Events (SSE)** — the niche-tier search, research agent insight, and final scored products each arrive as separate JSON events, so the UI updates progressively rather than waiting for the full pipeline.
+
 ```
 User message
       │
@@ -199,16 +208,32 @@ User message
                            │ Cache miss
                            ▼
 ┌─────────────────────────────────────────────────────┐
-│ STAGE 3 — TAVILY PRODUCT DISCOVERY (~1s)           │
+│ STAGE 3 — RESEARCH AGENT (Gemini, ~1s, parallel)  │
+│                                                     │
+│  research_community_picks() queries Gemini with     │
+│  Google Search grounding to surface expert picks,  │
+│  community recommendations, and niche stores the   │
+│  Tavily pass might miss. The insight is streamed   │
+│  to the frontend immediately (masks Tavily latency)│
+│  and the URLs it surfaces are injected into the    │
+│  contender set alongside the Tavily results.        │
+└──────────────────────────┬──────────────────────────┘
+                           │
+                           ▼
+┌─────────────────────────────────────────────────────┐
+│ STAGE 4 — TAVILY PRODUCT DISCOVERY (~1s)           │
 │                                                     │
 │  Query = localized_search_query + " buy"           │
 │  (" buy" injected in Python to surface product     │
 │  listing pages rather than manufacturer brand sites)│
 │                                                     │
-│  Two-pass strategy:                                │
-│  1. Local: up to 20 results within local_domains   │
-│     — if < 5 results, supplement with global       │
-│  2. Global: up to 15 additional unrestricted URLs  │
+│  Four-pass niche-first strategy:                   │
+│  1. Niche local: specialty stores for the user's   │
+│     country (tier='niche' from supported_retailers)│
+│  2. Mainstream local: large platforms (tier=       │
+│     'mainstream') if niche returns < 3 products    │
+│  3. Niche global: specialty stores worldwide       │
+│  4. Mainstream global: unrestricted fallback        │
 │  Results merged, deduplicated, ~25 total URLs.     │
 │  Excluded URLs stripped before scraping.           │
 │                                                     │
@@ -219,7 +244,7 @@ User message
                            │
                            ▼
 ┌─────────────────────────────────────────────────────┐
-│ STAGE 4 — SCRAPE + SCORE (~4-6s)                   │
+│ STAGE 5 — SCRAPE + SCORE (~4-6s)                   │
 │                                                     │
 │  ┌─ PHASE 2: Hybrid Waterfall + Filter (~1-2s) ───┐ │
 │  │  Blast all filtered URLs in parallel.          │ │
@@ -249,7 +274,7 @@ User message
                            │
                            ▼
 ┌─────────────────────────────────────────────────────┐
-│ STAGE 5 — CACHE & PERSIST (background tasks)       │
+│ STAGE 6 — CACHE & PERSIST (background tasks)       │
 │                                                     │
 │  Results saved to pgvector search_cache (6h TTL).  │
 │  Chat turn saved to chat_history.                  │
@@ -257,6 +282,12 @@ User message
 │  — user receives the response without waiting.     │
 └─────────────────────────────────────────────────────┘
 ```
+
+### Niche-First Pipeline
+
+The pipeline tries specialty/mid-market stores (tier=`'niche'`) before large mainstream platforms. Niche stores typically have better scrapability (fewer anti-bot defences), richer JSON-LD data, and carry products that aggregators like Amazon/eMAG don't stock. If niche stores turn up fewer than 3 scorable products, the pipeline transparently falls back to mainstream — a status message is streamed so the user knows the search widened.
+
+Retailer tier and proxy-required flags are sourced from the `supported_retailers` Supabase table (managed by `retailers_service.py` with a 5-minute in-memory TTL cache), replacing the previous hardcoded `_HARD_DOMAINS` frozenset and Gemini-guessed domain lists.
 
 ### Global Fallback
 
@@ -297,13 +328,14 @@ URL to scrape
 │                                                                  │
 │  Two-attempt waterfall per URL:                                  │
 │  Attempt 1 — Free direct connection (no proxy).                  │
-│    Skip for hard domains (Amazon, Walmart, Target) or any        │
-│    domain already learned to require a proxy this session.       │
+│    Skip for hard domains (from supported_retailers where         │
+│    requires_proxy=TRUE) or any domain already learned to         │
+│    require a proxy (hostile_domains table / session cache).      │
 │  Attempt 2 — Residential proxy escalation (IPRoyal,              │
 │    geo.iproyal.com:12321). Activated on 429, 403/503, or a       │
-│    soft-block from attempt 1. The domain is added to             │
-│    _proxy_required_domains so future calls skip the wasted        │
-│    direct hop and go straight to the proxy.                      │
+│    soft-block from attempt 1. The domain is persisted to the     │
+│    hostile_domains Supabase table so future server restarts      │
+│    skip the wasted direct hop immediately.                        │
 │  ✓ Either attempt succeeds → return parsed result                │
 │  ✗ Proxy also blocked → fall through                             │
 └──────────────────────────┬───────────────────────────────────────┘
@@ -398,15 +430,15 @@ Attempt 2 — Residential proxy escalation
   └─ Still blocked             →  mark _blocked=True, fall to ghost layer
 ```
 
-**Learner pattern — `_proxy_required_domains: set[str]`**
+**Learner pattern — `hostile_domains` (Supabase table)**
 
-The first time a domain fails the direct attempt, it is added to an in-memory set `_proxy_required_domains`. All subsequent fetches for that domain within the same server session skip attempt 1 entirely and go straight to the proxy. The set starts empty on every server restart; domains earn their way in by failing the free path.
+The first time a domain fails the direct attempt, it is added to an in-memory set **and** persisted to the `hostile_domains` Supabase table. All subsequent fetches for that domain — across server restarts — skip attempt 1 entirely and go straight to the proxy.
 
-**Hard-coded hostile domains — `_HARD_DOMAINS` frozenset**
+**Hard-coded hostile domains — `requires_proxy=TRUE` in `supported_retailers`**
 
-Amazon (all regional TLDs), Walmart, and Target are hard-coded to skip attempt 1 unconditionally — empirical testing confirmed that datacenter IPs (including CF Workers) are blocked at the network edge regardless of TLS fingerprint.
+Amazon (all regional TLDs), Walmart, and similar sites are flagged `requires_proxy=TRUE` in the `supported_retailers` table — empirical testing confirmed that datacenter IPs (including CF Workers) are blocked at the network edge regardless of TLS fingerprint.
 
-**Return-policy fetches** apply the same rule: the proxy is used only when the domain is in `_HARD_DOMAINS` or `_proxy_required_domains`.
+**Return-policy fetches** apply the same rule: the proxy is used only when the domain is flagged in `supported_retailers` or `hostile_domains`.
 
 The proxy is optional. When `PROXY_HOST` / `PROXY_PORT` / `PROXY_USERNAME` / `PROXY_PASSWORD` are absent, escalations that would use the proxy instead mark the result as blocked immediately.
 
@@ -458,7 +490,7 @@ Every product is scored across four dimensions in one Gemini call. The scores ar
 |---|---|---|
 | `cost_efficiency` | 40% | Real value for the price paid. Being well under budget is rewarded, not penalised. |
 | `quality_confidence` | 35% | Confidence in product quality: ratings, review counts, spec signals, quality badges. |
-| `logistics` | 15% | Shipping cost, delivery speed, and availability to the user's location. Extracted directly from the store's own shipping policy page — works for any store on Earth, not just a pre-approved list. |
+| `logistics` | 15% | Shipping cost, delivery speed, and availability to the user's location. Sourced from `logistics_data.py` registry for known retailers; dynamic extraction for unknown ones. |
 | `trust` | 10% | Seller reputation and return policy. Official brand stores with generous return windows score higher than unknown third-party sellers. |
 
 **Score anchors (0–100 per dimension):**
@@ -570,11 +602,25 @@ Gemini is instructed to use these values directly for budget checks and scoring 
 
 ## Autonomous Logistics Discovery
 
-> **The core challenge:** A product page never tells you the shipping cost — that information only appears once you're logged in at checkout. SmartShop solves this the same way a human would: by scrolling to the footer and clicking the "Shipping Policy" link.
+> **The core challenge:** A product page never tells you the shipping cost — that information only appears once you're logged in at checkout. SmartShop solves this in two complementary ways: a deterministic registry for known retailers, and a dynamic two-hop extraction for unknown stores.
 
-### How it works — the Two-Hop
+### Primary — `logistics_data.py` Deterministic Registry
 
-Every time a product page is scraped, the system automatically performs two extra steps in the background:
+For retailers in the registry (major Romanian, EU, and global stores), shipping fees, free-shipping thresholds, delivery windows, and easybox availability are hard-coded as structured facts. This gives the scoring prompt exact arithmetic to work with — no LLM guessing required.
+
+```python
+"emag.ro": {
+    "base_shipping_fee_ron": 15,
+    "free_shipping_threshold_ron": 1500,
+    "easybox_available": True,
+    "delivery_days": "1–3",
+    ...
+}
+```
+
+### Fallback — Dynamic Two-Hop for Unknown Stores
+
+For retailers not in the registry, the system performs two extra steps automatically:
 
 **Hop 1 — The Footer Sniper**
 
@@ -606,25 +652,9 @@ The prompt includes approximate conversion rates (1 EUR ≈ 5 RON, 1 USD ≈ 4.6
 | Ships here + paid + moderate (≤ 7 days) | 55–65 | Standard paid shipping |
 | Does not ship to the user's country | 0–20 | Critical penalty — product excluded or ranked last |
 
-### Example output injected into the scoring prompt
-
-```
-### VENDOR LOGISTICS CONTEXT (germanstore.de → Craiova, Romania)
-• Ships to your location: Yes
-• Shipping cost: 40 RON  (€8 converted at 1 EUR ≈ 5 RON)
-• Estimated delivery: 7-10 business days
-• Free shipping threshold: None
-→ LOGISTICS SCORE GUIDANCE: 55–65 (paid shipping, moderate delivery time)
-   Use this guidance as your primary logistics score source.
-```
-
 ### Performance — domain-level caching
 
-The two-hop runs **once per domain per server session**, not once per product. If a search returns three products from emag.ro, the shipping policy is fetched on the first product and the result is reused for the other two instantly. The `_logistics_cache` dict (keyed by domain) and the scraper's `_policy_cache` both persist in memory for the lifetime of the server process, surviving across multiple user searches.
-
-### Works for every store on Earth
-
-The system works for any retailer in any language — a niche Japanese electronics shop, a boutique in Berlin, a sporting goods store in Poland. The only requirement is that the store has a publicly accessible shipping policy page, which virtually all legitimate retailers do.
+Logistics data runs **once per domain per server session**, not once per product. If a search returns three products from emag.ro, the shipping policy is fetched on the first product and the result is reused for the other two instantly. The `_logistics_cache` dict (keyed by domain) and the scraper's `_policy_cache` both persist in memory for the lifetime of the server process, surviving across multiple user searches.
 
 ---
 
@@ -706,6 +736,8 @@ def put(self, key: str, value: dict) -> None:
         self._store[key] = value
 ```
 
+Scrape results are also persisted to the `scrape_cache` Supabase table (24-hour TTL), so a cold-started server benefits from URLs already scraped by prior sessions rather than starting from zero.
+
 ### 3. `@lru_cache` on HTML Parsing — CPU deduplication
 
 Parsing raw HTML with regex, `json.loads`, and BeautifulSoup is CPU-intensive. When 50 users simultaneously search for the same iPhone model, they will all receive the same HTML from the product page. Without caching, both extractors run 50 times for identical input.
@@ -768,17 +800,6 @@ Five async workers drain the queue concurrently. A P5 worker sleeping for 3 s do
 
 ---
 
-## Plan & Billing
-
-| | Free | Pro |
-|---|---|---|
-| Search & discover | Unlimited | Unlimited |
-| Auto-checkout credits | 2 (lifetime) | Unlimited |
-
-Billing is handled by **Lemon Squeezy** as Merchant of Record (handles global VAT and sales tax). On payment success, Lemon Squeezy fires a signed webhook to `POST /webhooks/lemonsqueezy` which upgrades `profiles.plan` to `"pro"`.
-
----
-
 ## Frontend
 
 Built with Next.js 15 App Router, TailwindCSS, and TypeScript.
@@ -793,7 +814,6 @@ Built with Next.js 15 App Router, TailwindCSS, and TypeScript.
 | `/register` | Email + location form → OTP verification |
 | `/register/passkey` | WebAuthn passkey enrollment |
 | `/verify` | Magic link fallback handler |
-| `/plan` | Post-registration plan selection |
 
 **`(dashboard)`** — JWT-protected:
 
@@ -843,14 +863,6 @@ passkeys      -- WebAuthn FIDO2 credentials
   public_key TEXT, sign_count INTEGER
 ```
 
-### `002_plan_schema.sql`
-
-```sql
-ALTER TABLE profiles
-  ADD COLUMN plan TEXT DEFAULT 'free' CHECK (plan IN ('free','pro')),
-  ADD COLUMN checkout_credits INTEGER DEFAULT 2
-```
-
 ### `003_search_cache.sql`
 
 ```sql
@@ -879,6 +891,54 @@ ALTER TABLE profiles
 -- state column is kept (collected as optional field in the registration form)
 ```
 
+### `005_supported_retailers.sql`
+
+```sql
+supported_retailers   -- DB-backed retailer registry (replaces hardcoded domain lists)
+  domain TEXT UNIQUE,
+  target_country TEXT,   -- ISO 3166-1 alpha-2 or 'GLOBAL'
+  requires_proxy BOOLEAN,
+  tier TEXT CHECK (IN 'niche', 'mainstream'),
+  is_active BOOLEAN
+
+-- Seeded with 100+ retailers across 20+ countries.
+-- Loaded by retailers_service.py with a 5-minute in-process TTL cache.
+```
+
+### `006_scrape_cache.sql`
+
+```sql
+scrape_cache      -- Persistent 24-hour per-URL scrape result store
+  url TEXT PK,
+  markdown TEXT,
+  jsonld JSONB,
+  shipping_policy_url TEXT,
+  return_policy_text TEXT,
+  scraped_at TIMESTAMPTZ
+
+hostile_domains   -- Persisted proxy-learner set (survives server restarts)
+  domain TEXT PK,
+  flagged_at TIMESTAMPTZ
+```
+
+### `007_drop_plan_columns.sql`
+
+```sql
+-- Billing/plan system removed from the product.
+ALTER TABLE public.profiles
+  DROP COLUMN IF EXISTS plan,
+  DROP COLUMN IF EXISTS checkout_credits;
+```
+
+### `008_retailer_tiers.sql`
+
+```sql
+-- Adds tier column to supported_retailers and reclassifies specialty stores.
+ALTER TABLE supported_retailers
+  ADD COLUMN IF NOT EXISTS tier TEXT NOT NULL DEFAULT 'mainstream'
+  CONSTRAINT valid_tier CHECK (tier IN ('niche', 'mainstream'));
+```
+
 Row Level Security enabled on all tables. Backend uses the service-role key exclusively — no client-side DB writes.
 
 ---
@@ -891,26 +951,25 @@ SmartShoppingAssistant/
 ├── README.md
 │
 ├── backend/
-│   ├── main.py                        # FastAPI app, CORS, router registration
+│   ├── main.py                        # FastAPI app, CORS, router registration,
+│   │                                  #   retailers_service.preload() on startup
 │   ├── requirements.txt
 │   ├── live_pipeline_test.py          # Verbose end-to-end test harness (5 scenarios,
 │   │                                  #   no mocks — hits real Tavily/Gemini/scraper)
 │   ├── core/config.py                 # Pydantic settings (reads from .env)
 │   ├── models/
 │   │   ├── search.py                  # ChatMessage, Product, ChatResponse
-│   │   ├── user.py                    # Auth request/response models (OTPRequest:
-│   │   │                              #   email, phone, city, state?, country)
-│   │   └── plan.py                    # PlanStatus, PlanCheckoutResponse
+│   │   └── user.py                    # Auth request/response models (OTPRequest:
+│   │                                  #   email, phone, city, state?, country)
 │   ├── routers/
 │   │   ├── auth.py                    # WebAuthn, OTP, JWT
-│   │   ├── search.py                  # /search/chat — 3-phase funnel orchestration
-│   │   │                              #   is_likely_product_url shape filter applied
-│   │   │                              #   after Tavily, before scraping
-│   │   ├── plan.py                    # /plan/status, /plan/select, /plan/checkout
-│   │   └── webhooks.py                # Lemon Squeezy payment webhook
+│   │   └── search.py                  # /search/chat — SSE streaming pipeline:
+│   │                                  #   niche-first strategy, research agent,
+│   │                                  #   is_likely_product_url shape filter
 │   ├── services/
 │   │   ├── gemini_service.py          # Intent classification, scoring, embeddings,
-│   │   │                              #   logistics micro-agent (LogisticsData),
+│   │   │                              #   research_community_picks (Google Search
+│   │   │                              #   grounded), extract_dynamic_logistics,
 │   │   │                              #   Groq circuit breaker (Llama 3.3-70B scoring
 │   │   │                              #   / Llama 3.1-8B intent), compact prompt builder
 │   │   ├── tavily_service.py          # Product URL discovery
@@ -918,16 +977,19 @@ SmartShoppingAssistant/
 │   │   │                              #   CF Worker Swarm → direct curl_cffi
 │   │   │                              #   (lazy residential proxy escalation) →
 │   │   │                              #   ghost layer (Google Cache / Archive).
-│   │   │                              #   _proxy_required_domains learner set.
-│   │   │                              #   _HARD_DOMAINS frozenset (Amazon etc.).
+│   │   │                              #   hostile_domains DB learner set.
 │   │   │                              #   is_likely_product_url() shape filter.
 │   │   │                              #   is_valid_product_page() soft-block detector.
 │   │   │                              #   6-profile TLS rotation, TLD locale headers,
 │   │   │                              #   same-origin referer, jitter retry.
-│   │   │                              #   LRU/Bloom caches + priority queue scheduler.
+│   │   │                              #   LRU/Bloom in-memory caches + scrape_cache DB
+│   │   │                              #   + priority queue scheduler.
+│   │   ├── retailers_service.py       # supported_retailers DB wrapper:
+│   │   │                              #   niche/mainstream domains per country,
+│   │   │                              #   proxy-required set, 5-min TTL cache
+│   │   ├── logistics_data.py          # Deterministic shipping registry for known
+│   │   │                              #   retailers (fees, thresholds, delivery windows)
 │   │   ├── jsonld_service.py          # Schema.org JSON-LD + BeautifulSoup4 extraction
-│   │   ├── stagehand_service.py       # Stagehand Node.js microservice client —
-│   │   │                              #   full JS rendering fallback for SPA storefronts
 │   │   ├── cache_service.py           # pgvector semantic cache + cache-clear
 │   │   └── supabase_service.py        # Admin client singleton
 │   └── tests/
@@ -936,26 +998,27 @@ SmartShoppingAssistant/
 │       ├── test_scraper_service.py    # _parse_html, scrape_urls scheduler
 │       ├── test_auth.py               # Auth endpoint tests
 │       ├── test_registration_flow.py  # Registration flow integration tests
-│       ├── test_login_flow.py         # Login flow tests
-│       ├── test_plan.py               # Plan/billing tests
+│       └── test_login_flow.py         # Login flow tests
 │       ├── mock/
 │       │   ├── test_search_mock.py    # Search endpoint tests (all external calls mocked)
 │       │   ├── test_real_user_scenarios.py # Conversation scenario tests
+│       │   ├── test_research_agent.py # research_community_picks, _compress_markdown,
+│       │   │                          #   _pick_contenders, SSE pipeline integration
 │       │   ├── test_jsonld_service.py # JSON-LD / microdata unit tests
 │       │   └── test_data_structures.py # BloomFilter, _LRUCache, ScraperScheduler
 │       └── live/
 │           ├── test_search_live.py    # Live API tests (Gemini, Tavily, scraper)
+│           ├── test_research_agent_live.py # research_community_picks live tests
 │           └── test_shopping_scenarios.py  # Full pipeline: bike, watch, backpack
 │                                           # (RUN_SHOPPING_SCENARIO_TESTS=1)
 │
 ├── frontend/
 │   ├── app/
-│   │   ├── (auth)/login, register, verify, plan
+│   │   ├── (auth)/login, register, verify
 │   │   └── (dashboard)/dashboard, history
 │   ├── components/
 │   │   ├── auth/  LoginForm, RegisterForm (city, state?, country — no street/postal)
 │   │   ├── chat/  ChatInterface, ChatInput, MessageBubble, ProductCard
-│   │   ├── plan/  PlanSelection
 │   │   └── ThemeToggle.tsx
 │   └── lib/
 │       ├── api.ts                     # Typed fetch wrappers for all endpoints
@@ -965,9 +1028,12 @@ SmartShoppingAssistant/
 │
 └── supabase/migrations/
     ├── 001_initial_schema.sql
-    ├── 002_plan_schema.sql
     ├── 003_search_cache.sql
-    └── 004_simplify_profiles.sql      # Drops street_address, postal_code
+    ├── 004_simplify_profiles.sql      # Drops street_address, postal_code
+    ├── 005_supported_retailers.sql    # Retailer registry table + seed data
+    ├── 006_scrape_cache.sql           # scrape_cache + hostile_domains tables
+    ├── 007_drop_plan_columns.sql      # Removes plan/checkout_credits columns
+    └── 008_retailer_tiers.sql         # Adds niche/mainstream tier column
 ```
 
 ---
@@ -978,7 +1044,7 @@ SmartShoppingAssistant/
 
 - Python 3.12+, Node.js 20+
 - Supabase project with the `vector` extension enabled
-- API keys: Gemini, Tavily, Lemon Squeezy
+- API keys: Gemini, Tavily
 - Optional: Groq API key (circuit breaker), IPRoyal residential proxy credentials, Cloudflare Worker URLs
 
 ### Backend
@@ -987,7 +1053,7 @@ SmartShoppingAssistant/
 cd backend
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-# Apply supabase/migrations/ in order (001 → 002 → 003 → 004)
+# Apply supabase/migrations/ in order (001 → 003 → 004 → 005 → 006 → 007 → 008)
 # Use: npx supabase db push (requires supabase CLI linked to your project)
 cp .env.example .env   # fill in all values
 uvicorn main:app --reload   # http://localhost:8000
@@ -1018,9 +1084,6 @@ TAVILY_API_KEY=...
 JWT_SECRET=...                  # random 32+ char string
 RP_ID=localhost                 # must match browser origin domain
 FRONTEND_ORIGIN=http://localhost:3000
-LEMONSQUEEZY_API_KEY=...
-LEMONSQUEEZY_VARIANT_ID=...
-LEMONSQUEEZY_WEBHOOK_SECRET=...
 
 # ── Groq circuit breaker (optional) ───────────────────────────────────────
 # When set, activates Llama 3.3-70B as a fallback when Gemini returns 429.
@@ -1057,10 +1120,9 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=...
 ```bash
 cd backend
 python -m pytest tests/ --ignore=tests/live -q
-# 200 tests
 ```
 
-Covers: endpoint logic, OTPRequest model validation, JSON-LD extraction edge cases, real user conversation scenarios, semantic cache bypass, excluded URL stripping, global fallback, no-results clarification, BloomFilter correctness and false-positive rate, `_LRUCache` eviction ordering, `ScraperScheduler` future resolution, `scrape_urls` scheduler behaviour, `_parse_html` extraction, and `_pick_contenders` filtering logic.
+Covers: endpoint logic, OTPRequest model validation, JSON-LD extraction edge cases, real user conversation scenarios, semantic cache bypass, excluded URL stripping, global fallback, no-results clarification, BloomFilter correctness and false-positive rate, `_LRUCache` eviction ordering, `ScraperScheduler` future resolution, `scrape_urls` scheduler behaviour, `_parse_html` extraction, `_pick_contenders` filtering logic, `_compress_markdown` signal-line extractor, and `research_community_picks` SSE pipeline integration.
 
 ### Live tests (consumes real API credits)
 
@@ -1068,6 +1130,12 @@ Covers: endpoint logic, OTPRequest model validation, JSON-LD extraction edge cas
 cd backend
 python -m pytest tests/live/test_search_live.py -m live -v
 # ~28 tests: intent classification, embeddings, Tavily, scraper
+```
+
+Research agent live tests:
+
+```bash
+python -m pytest tests/live/test_research_agent_live.py -v
 ```
 
 Full shopping scenario pipeline (most expensive — hits Tavily + Gemini + scraper):
@@ -1100,8 +1168,8 @@ npm test
 
 **No PCI-DSS** — Card numbers are never stored anywhere. The current flow sends the user directly to the retailer's product page to complete the purchase manually.
 
-**No internal ledger** — SmartShop does not hold funds or process payments. The $9.99/month subscription is delegated entirely to Lemon Squeezy as Merchant of Record.
-
 **Scoring arithmetic in Python** — `value_score` is always recomputed deterministically in Python after receiving Gemini's dimension scores. Gemini's own `value_score` field in the JSON response is discarded to prevent floating-point drift and prompt-injection attacks from affecting rankings.
 
 **Tests must not touch live services** — Unit and mock tests patch all external calls (Gemini, Tavily, Supabase, scraper). The full unit suite runs in under 2 seconds with no network I/O.
+
+**Retailer registry over hardcoded lists** — Domain lists (proxy-required, country domains, tiers) live in the `supported_retailers` Supabase table. `retailers_service.py` loads them with a 5-minute TTL. Adding a new retailer is a DB insert, not a code change.

@@ -549,11 +549,16 @@ def _extract_text_bs4(html: str) -> str:
     for noise in soup(["script", "style", "nav", "footer", "header", "aside",
                        "noscript", "iframe", "svg"]):
         noise.decompose()
-    # Strip form internals but keep button text — buy/cart buttons live inside forms
-    # and their text is the purchasability signal Gemini needs.
+    # Strip form internals but keep enabled button text — disabled buttons signal OOS
+    # and must be dropped so Gemini doesn't misread a greyed-out "Add to Cart" as
+    # an active checkout path.
     for form in soup.find_all("form"):
-        buttons = " ".join(b.get_text(" ", strip=True) for b in form.find_all(["button", "input"]))
-        form.replace_with(soup.new_string(buttons))
+        valid_buttons = []
+        for b in form.find_all(["button", "input"]):
+            if b.has_attr("disabled") or "disabled" in b.get("class", []):
+                continue
+            valid_buttons.append(b.get_text(" ", strip=True))
+        form.replace_with(soup.new_string(" ".join(valid_buttons)))
     body = soup.body or soup
     text = body.get_text("\n", strip=True)
     return re.sub(r"\n{3,}", "\n\n", text)[:50_000]
@@ -739,8 +744,15 @@ def _parse_html(url: str, html: str) -> dict:
     if not html:
         return {"url": url, "markdown": "", "jsonld": {}, "shipping_policy_url": None, "return_policy_text": None}
 
-    # JSON-LD is authoritative; BS4 fills gaps (OG meta, itemprop, aria-labels).
-    jsonld = {**extract_bs4_facts(html), **extract_jsonld_facts(html)}
+    # JSON-LD fills gaps from BS4, but visual OOS signals win over stale JSON-LD cache.
+    # Mid-market sites cache HTML (including JSON-LD) for hours; the dynamic frontend
+    # injects real-time stock state that BS4 reads from visible text — that reading
+    # must override a "InStock" declaration frozen in a server-side cache.
+    bs4_facts = extract_bs4_facts(html)
+    jsonld_facts = extract_jsonld_facts(html)
+    jsonld = {**bs4_facts, **jsonld_facts}
+    if bs4_facts.get("availability") == "Out of Stock":
+        jsonld["availability"] = "Out of Stock"
 
     # Merge logistics from __NEXT_DATA__ hydration (JSON-LD still wins on conflict).
     for k, v in _extract_next_data_logistics(html).items():

@@ -21,6 +21,68 @@ from bs4 import BeautifulSoup
 
 logger = logging.getLogger(__name__)
 
+# Definitive out-of-stock phrases injected by dynamic frontends (AJAX) that bypass
+# server-side HTML/JSON-LD caches.  Multi-lingual to cover the Romanian and EU markets.
+_OOS_PHRASES: tuple[str, ...] = (
+    # Romanian
+    "stoc epuizat", "indisponibil", "nu este in stoc", "nu este disponibil",
+    "notifica-ma cand revine", "alerteaza-ma cand revine",
+    # English
+    "out of stock", "sold out", "currently unavailable",
+    "notify me when available", "email me when available",
+    # German
+    "ausverkauft", "nicht verfügbar", "nicht vorrätig",
+    # French
+    "épuisé", "rupture de stock", "indisponible",
+    # Spanish
+    "agotado", "no disponible", "sin stock",
+    # Italian
+    "esaurito", "non disponibile",
+    # Dutch
+    "niet beschikbaar", "uitverkocht",
+    # Polish
+    "niedostępny", "brak w magazynie",
+)
+
+# Matches add-to-cart / buy-now intent in button text across supported locales.
+_CART_TEXT_RE = re.compile(
+    r"add.{0,10}cart|adaug[aă].{0,10}co[șs]|in.{0,10}warenkorb|"
+    r"ajout.{0,10}panier|agregar.{0,10}carrito|aggiung.{0,10}carrello|"
+    r"\bbuy\b|\bacheter\b|\bkaufen\b|\bcomprar\b|\bacquistare\b|\bkup\b",
+    re.IGNORECASE,
+)
+
+
+def _detect_visual_oos(soup: BeautifulSoup) -> bool:
+    """
+    Return True when the rendered page body contains definitive out-of-stock signals.
+
+    Covers two patterns that slip past JSON-LD caches:
+      1. OOS text injected by AJAX ("Stoc epuizat", "Out of Stock", …).
+      2. All cart-intent buttons inside a form are disabled — the site has greyed
+         out the buy path but left the button text unchanged.
+    """
+    body = soup.body or soup
+    page_text = body.get_text(" ", strip=True).lower()
+
+    if any(phrase in page_text for phrase in _OOS_PHRASES):
+        return True
+
+    # If every cart-intent button in every form is disabled, the item is OOS.
+    for form in soup.find_all("form"):
+        cart_buttons = [
+            b for b in form.find_all(["button", "input"])
+            if _CART_TEXT_RE.search(b.get_text(" ", strip=True))
+        ]
+        if cart_buttons and all(
+            b.has_attr("disabled") or "disabled" in b.get("class", [])
+            for b in cart_buttons
+        ):
+            return True
+
+    return False
+
+
 # How many unique HTML pages to keep parsed results for.
 # Popular products (gaming laptops, phones) are requested by many concurrent users;
 # the cache turns O(n·parse) into O(1·parse + (n-1)·lookup) for identical pages.
@@ -431,6 +493,12 @@ def extract_bs4_facts(html: str) -> dict:
                 if v:
                     facts["price"] = v
                     break
+
+    # Negative override: scan visible page content for dynamic OOS signals.
+    # This catches stock-state updates injected by AJAX that are invisible in the
+    # server-cached JSON-LD block (which may declare "InStock" for days after sell-out).
+    if "availability" not in facts and _detect_visual_oos(soup):
+        facts["availability"] = "Out of Stock"
 
     # Assemble rating string
 
