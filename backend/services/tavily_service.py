@@ -100,7 +100,7 @@ def search_products(
         domains = include_domains if include_domains is not None else _GLOBAL_ECOMMERCE_DOMAINS
         result = _client.search(
             query=query,
-            search_depth="advanced",
+            search_depth="basic",
             max_results=max_results,
             include_answer=False,
             include_domains=domains,
