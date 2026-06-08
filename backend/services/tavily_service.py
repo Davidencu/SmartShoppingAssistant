@@ -42,17 +42,40 @@ _GLOBAL_ECOMMERCE_DOMAINS: list[str] = [
     # ── Netherlands / Belgium ────────────────────────────────────────────────
     "amazon.nl", "coolblue.nl", "bol.com", "mediamarkt.nl",
     # ── Romania niche ────────────────────────────────────────────────────────
-    "pcgarage.ro", "evomag.ro",
+    "pcgarage.ro", "evomag.ro", "decathlon.ro", "notino.ro",
+    "intersport.ro", "answear.ro", "libris.ro", "zooplus.ro",
     # ── Romania mainstream ────────────────────────────────────────────────────
     "emag.ro", "altex.ro", "flanco.ro", "cel.ro",
     # ── Czech / Slovakia ─────────────────────────────────────────────────────
-    "alza.cz", "czc.cz", "alza.sk",
+    "alza.cz", "czc.cz", "alza.sk", "sportisimo.cz", "notino.cz", "mall.cz",
     # ── Nordics niche ────────────────────────────────────────────────────────
     "webhallen.com", "komplett.no", "komplett.se", "digitec.ch", "galaxus.ch",
+    "inet.se", "proshop.dk", "proshop.no",
     # ── Nordics mainstream ────────────────────────────────────────────────────
     "amazon.se", "power.fi",
+    # ── Benelux niche ────────────────────────────────────────────────────────
+    "vandenborre.be", "krefel.be", "wehkamp.nl", "bcc.nl", "megekko.nl", "fonq.nl",
+    # ── UK niche (cycling / sports / home) ───────────────────────────────────
+    "halfords.com", "ao.com", "sportsdirect.com", "dunelm.com", "screwfix.com",
+    # ── DE niche (cycling / culture / home) ──────────────────────────────────
+    "galaxus.de", "thalia.de", "rose-bikes.com", "fahrrad.de", "home24.de",
+    # ── FR niche (DIY / culture / cycling) ───────────────────────────────────
+    "manomano.fr", "cultura.com", "alltricks.fr", "materiel.net",
+    # ── ES / IT / PL niche ───────────────────────────────────────────────────
+    "sprinter.es", "empik.com", "ibs.it", "eprice.it",
+    # ── AU / CA / IN / BR niche ──────────────────────────────────────────────
+    "rebel.com.au", "catch.com.au", "memoryexpress.com", "mec.ca",
+    "myntra.com", "nykaa.com", "kabum.com.br",
     # ── Global niche ─────────────────────────────────────────────────────────
     "decathlon.com", "zappos.com", "reverb.com", "backcountry.com",
+    "wiggle.com", "chainreactioncycles.com", "bike24.com", "probikekit.com",
+    "thomann.de", "iherb.com", "myprotein.com", "notino.com",
+    "tradeinn.com", "manomano.com", "aboutyou.com", "zooplus.com",
+    # ── Shopify DTC brands ────────────────────────────────────────────────────
+    "gymshark.com", "allbirds.com", "skims.com", "fashionnova.com",
+    "kyliecosmetics.com", "colourpop.com", "fentybeauty.com",
+    "brooklinen.com", "ruggable.com", "casetify.com", "dbrand.com",
+    "cotopaxi.com", "vuoriclothing.com", "nomadgoods.com",
     # ── Global mainstream ─────────────────────────────────────────────────────
     "amazon.ca", "amazon.com.au", "amazon.co.jp", "amazon.in",
     "ebay.com", "zalando.com", "hm.com", "uniqlo.com", "aliexpress.com",
