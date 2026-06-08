@@ -33,7 +33,7 @@ from datetime import datetime, timedelta, timezone
 from enum import IntEnum
 from collections.abc import Awaitable, Callable
 from typing import Any, Optional
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 from bs4 import BeautifulSoup
 from curl_cffi.requests import Session
@@ -568,32 +568,16 @@ def _extract_text_bs4(html: str) -> str:
 
 _CAT_PATH_RE = re.compile(
     r"/(?:"
-    # ── Categories / Collections / Catalog ───────────────────────────────────
-    # NOTE: single-letter 'c', 's', 'w' removed — too many niche shops use them
-    # as benign routing prefixes (e.g. /c/ for color, /w/ for wide fit)
-    r"cat|category|categories|"
-    r"categorie|kategorie|kategori|kategoria|"           # FR / DE / SE-NO-DK / PL
-    r"department|dept|collections|"
-    r"catalog|catalogo|catalogue|katalog|catalogus|"     # EN / ES-IT / FR / DE-PL / NL
-    r"browse|wholesale|"
-    # ── Search ───────────────────────────────────────────────────────────────
-    r"search|results|"
-    r"cautare|recherche|suche|buscar|busqueda|ricerca|"  # RO / FR / DE / ES / ES / IT
-    r"szukaj|zoeken|sok|sog|haku|hledat|kereses|"        # PL / NL / SE / NO / FI / CZ / HU
-    # ── Filters / Tags ───────────────────────────────────────────────────────
-    r"filter|filtre|filtru|filtro|filtr|szuro|"          # EN / FR / RO / ES-IT / PL / HU
-    r"sort|tag|brand|brands|"
-    # ── Promotions / Sales ───────────────────────────────────────────────────
-    r"sale|promo|promotii|oferte|toate-sporturile|sport|sports|"
-    r"clearance|new-arrivals|best-sellers|seasonal|"
-    # ── Non-product site sections ─────────────────────────────────────────────
-    r"sitemap|help|about|contact|blog|blogs|news|articles|faq|pages|"
-    r"wishlist|account|login|register|cart|checkout|basket|shop|"
-    r"mens|womens|kids|"
-    # ── Retailer-specific structural paths ────────────────────────────────────
-    r"cpl|comentarii|pagina-producator|magazine|stores|buticuri|"
-    r"zgbs|gp|new-releases|infocenter|start-selling|podcasts"
+    r"cat|category|categorie|kategorie|kategori|kategoria|"
+    r"collections|catalog|catalogo|catalogue|katalog|catalogus|wholesale|"
+    r"search|cautare|recherche|suche|buscar|busqueda|ricerca|szukaj|zoeken|sok|sog|"
+    r"filter|filtru|filtre|filtro|filtr|szuro"
     r")(?:/|$|\?)",
+    re.IGNORECASE,
+)
+
+_PRODUCT_KEYWORDS = re.compile(
+    r"(?:bicicleta|bike|rucsac|backpack|ceas|watch|laptop|notebook|pantofi|shoes|adidasi)",
     re.IGNORECASE,
 )
 _CAT_PARAM_RE = re.compile(
@@ -620,40 +604,31 @@ def is_likely_product_url(url: str) -> bool:
     False for category / search / listing pages that waste a scrape slot.
     """
     try:
-        from urllib.parse import urlparse
-        parsed = urlparse(url)
-        host  = parsed.netloc.lower().removeprefix("www.")
-        path  = parsed.path
-        query = parsed.query
-
-        if host in _JUNK_HOSTS:
-            return False
-        # Support/corporate subdomains never host product pages
-        if host.startswith(("support.", "corporate.", "help.", "legal.", "careers.")):
-            return False
-        # Document files are never PDPs — drop instantly
-        if path.lower().endswith((".pdf", ".doc", ".docx", ".xls", ".xlsx",
-                                   ".csv", ".txt", ".zip", ".xml")):
-            return False
-        if _CAT_PATH_RE.search(path):
-            logger.debug("[SHAPE FILTER] Dropped URL due to category path match: %s", url)
-            return False
-        if query and _CAT_PARAM_RE.search("?" + query):
+        if _CAT_PATH_RE.search(url):
             return False
 
-        parts = [p for p in path.split("/") if p]
-        if len(parts) < 1:
-            return False  # root domain or single-segment
+        path = urlparse(url).path.strip("/")
+        segments = [s for s in path.split("/") if s]
+        depth = len(segments)
 
-        has_sku   = bool(_SKU_RE.search(url))
-        has_depth = len(parts) >= 2
-        has_slug  = any(len(p) > 8 for p in parts)  # product slug/ASIN ≈ >8 chars
-        # Flat-URL stores (e.g. bb-shop.ro) put everything in one path segment:
-        # /ceas-de-mana-morgan-43070.html — long slug WITH a numeric product ID.
-        # Category pages at depth 1 (/laptopuri, /biciclete) never have 3+ digits.
-        has_id_slug = any(len(p) > 8 and re.search(r"\d{3,}", p) for p in parts)
+        if depth == 0:
+            return False
 
-        return has_sku or (has_depth and has_slug) or has_id_slug
+        if _SKU_RE.search(url):
+            return True
+        if depth >= 2 and len(segments[-1]) > 10:
+            return True
+        if depth == 1 and any(char.isdigit() for char in segments[0] if char in "-_"):
+            return True
+
+        # Niche bypass: flat SEO slug containing a product noun lets through
+        # stores that never embed numeric IDs (e.g. /rucsac-columbia-trail-elite).
+        if depth == 1 and _PRODUCT_KEYWORDS.search(segments[0]):
+            logger.info("[SHAPE FILTER] allowed depth-1 niche product via keyword pass: %s", url)
+            return True
+
+        logger.debug("[SHAPE FILTER] dropped structurally non-conforming URL: %s", url)
+        return False
     except Exception:
         return True  # on parse error, allow through
 
