@@ -34,6 +34,7 @@ from enum import IntEnum
 from collections.abc import Awaitable, Callable
 from typing import Any, Optional
 from urllib.parse import urljoin, urlparse
+from urllib.parse import quote
 
 from bs4 import BeautifulSoup
 from curl_cffi.requests import Session
@@ -828,7 +829,11 @@ def fetch_via_residential_proxy(target_url: str, target_country: str) -> str | N
 
     session_id = random.randint(100_000, 999_999)
     proxy_user = f"customer-{_proxy_username}_country-{target_country}_session-{session_id}_lifetime-5m"
-    proxy_url = f"http://{proxy_user}:{_proxy_password}@{_proxy_host}:{_proxy_port}"
+    
+    # URL-encode the password specifically so special characters don't break the string
+    safe_password = quote(_proxy_password, safe='')
+    
+    proxy_url = f"http://{proxy_user}:{safe_password}@{_proxy_host}:{_proxy_port}"
     proxies = {"http": proxy_url, "https": proxy_url}
 
     # logger.warning(f"DEBUG PROXY STRING: {proxy_user}")
