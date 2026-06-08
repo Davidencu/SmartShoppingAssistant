@@ -823,28 +823,29 @@ def fetch_via_residential_proxy(target_url: str, target_country: str) -> str | N
 
     Returns raw HTML on HTTP 200, None on any error or non-200 status.
     The caller is responsible for running is_cloudflare_challenge() on the result.
+
+    IPRoyal supports two credential formats:
+      Format 1 (params in username): user_country-XX_session-YY:plainpass
+      Format 2 (params in password): user:pass_country-XX_session-YY
+
+    We detect which format is active by checking whether the stored password
+    already contains '_country-'. If so, use the static _proxy_url as-is
+    (Format 2); otherwise build the dynamic username (Format 1).
     """
     if not (_proxy_host and _proxy_username and _proxy_password):
         return None
 
-    session_id = random.randint(100_000, 999_999)
-    proxy_user = f"customer-{_proxy_username}_country-{target_country}_session-{session_id}_lifetime-5m"
-    
-    # URL-encode the password specifically so special characters don't break the string
-    safe_password = quote(_proxy_password, safe='')
-    
-    proxy_url = f"http://{proxy_user}:{safe_password}@{_proxy_host}:{_proxy_port}"
-    proxies = {"http": proxy_url, "https": proxy_url}
-
-    logging.error(f"DEBUG: Host len={len(_proxy_host or '')}, User len={len(_proxy_username or '')}, Pass len={len(_proxy_password or '')}")
-    
-    # Check if they contain whitespace (the silent killer)
-    if (_proxy_password and any(c.isspace() for c in _proxy_password)):
-        logging.error("FATAL: Your password contains whitespace!")
-    # --- END SANITY CHECK ---
-
-    if not (_proxy_host and _proxy_username and _proxy_password):
-        return None
+    # Format 2: session/country params are embedded in the stored password —
+    # appending them to the username as well triggers HTTP 407.
+    if "_country-" in _proxy_password:
+        proxies = {"http": _proxy_url, "https": _proxy_url}
+    else:
+        # Format 1: params go in the username; password is plain.
+        session_id = random.randint(100_000, 999_999)
+        proxy_user = f"{_proxy_username}_country-{target_country}_session-{session_id}_lifetime-10m"
+        safe_password = quote(_proxy_password, safe='')
+        dyn_url = f"http://{proxy_user}:{safe_password}@{_proxy_host}:{_proxy_port}"
+        proxies = {"http": dyn_url, "https": dyn_url}
 
     try:
         with Session(impersonate="chrome120") as s:
