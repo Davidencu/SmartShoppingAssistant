@@ -545,7 +545,7 @@ def _extract_text_bs4(html: str) -> str:
     so Gemini sees spec tables, review excerpts, and feature bullets.
     """
     try:
-        soup = BeautifulSoup(html, "lxml-xml")
+        soup = BeautifulSoup(html, "lxml")
     except Exception:
         return ""
     for noise in soup(["script", "style", "nav", "footer", "header", "aside",
@@ -573,7 +573,9 @@ _CAT_PATH_RE = re.compile(
     r"cat|category|categorie|kategorie|kategori|kategoria|"
     r"collections|catalog|catalogo|catalogue|katalog|catalogus|wholesale|"
     r"search|cautare|recherche|suche|buscar|busqueda|ricerca|szukaj|zoeken|sok|sog|"
-    r"filter|filtru|filtre|filtro|filtr|szuro"
+    r"filter|filtru|filtre|filtro|filtr|szuro|"
+    r"blog|news|about|terms|privacy|contact|help|faq|support|press|careers|"
+    r"account|login|logout|wishlist|sitemap"
     r")(?:/|$|\?)",
     re.IGNORECASE
 )
@@ -606,6 +608,17 @@ _SKU_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Common e-commerce CMS product path prefixes — always followed by a product identifier.
+# Covers Shopify (/products/slug), WooCommerce (/product/slug), eMAG (/pd/CODE),
+# and Romanian retail sites that use /p/{numeric-id} (dedeman.ro, altex.ro style).
+_CMS_PRODUCT_PATH_RE = re.compile(
+    r"(?:"
+    r"/(?:products?|items?|pd|pdp)/[^/\s?#]+"
+    r"|/p/\d{4,}"
+    r")(?:/|$|\?)",
+    re.IGNORECASE,
+)
+
 
 def is_likely_product_url(url: str) -> bool:
     try:
@@ -616,28 +629,51 @@ def is_likely_product_url(url: str) -> bool:
         if depth == 0:
             return False
 
-        # RULE 1: SKU Rescue evaluates FIRST
+        # RULE 1: Negative Filter evaluates FIRST (hard block).
+        # Category/filter/search URLs are rejected even when they contain
+        # numeric IDs — e.g. eMAG /filter/...v-12746936/c would otherwise
+        # be rescued by the SKU pattern below.
+        if _CAT_PATH_RE.search(url) or _CAT_PARAM_RE.search(url):
+            return False
+
+        # RULE 2: SKU Rescue — only for URLs that already passed the negative filter.
         if _SKU_RE.search(url):
             logger.info("[GATEKEEPER] Allowed via SKU match: %s", url)
             return True
 
-        # RULE 2: Negative Filter evaluates SECOND
-        if _CAT_PATH_RE.search(url) or _CAT_PARAM_RE.search(url):
-            return False
-
-        # RULE 3: Depth Analysis
-        if depth >= 2 and len(segments[-1]) > 10:
-            logger.info("[GATEKEEPER] Allowed via standard depth: %s", url)
+        # RULE 2b: CMS product path prefix.
+        # Shopify /products/slug, WooCommerce /product/slug, eMAG /pd/CODE, etc.
+        if _CMS_PRODUCT_PATH_RE.search(url):
+            logger.info("[GATEKEEPER] Allowed via CMS product prefix: %s", url)
             return True
-            
-        if depth == 1 and any(char.isdigit() for char in segments[0] if char in "-_"):
+
+        # RULE 3: Depth analysis.
+        # Any depth-2+ URL whose last segment is >= 5 chars is treated as a product page.
+        # Threshold lowered from > 10 to >= 5 to capture short WooCommerce/Shopify slugs
+        # (e.g. /rings/pearl, /rochii/rosie). Common non-product prefixes (blog, about, etc.)
+        # are already blocked by the extended _CAT_PATH_RE above.
+        if depth >= 2 and len(segments[-1]) >= 5:
+            logger.info("[GATEKEEPER] Allowed via standard depth+length: %s", url)
+            return True
+
+        if depth == 1 and any(char.isdigit() for char in segments[0]):
             logger.info("[GATEKEEPER] Allowed via depth-1 numeric ID: %s", url)
             return True
 
-        # RULE 4: The Niche Bypass
+        # RULE 4: Niche keyword bypass (depth-1).
         if depth == 1 and _PRODUCT_KEYWORDS.search(segments[0]):
             logger.info("[GATEKEEPER] Allowed via Niche Keyword Pass: %s", url)
             return True
+
+        # RULE 4b: Long descriptive depth-1 slug.
+        # Catches niche boutique slugs like /vanilla-sunset-candle or /cana-pictata-manual
+        # that have 3+ hyphen-separated tokens totalling >= 17 chars. Avoids false
+        # positives from very short slugs or single-token pagination IDs.
+        if depth == 1:
+            tokens = [t for t in re.split(r"[-_]", segments[0]) if len(t) >= 2]
+            if len(tokens) >= 3 and len(segments[0]) >= 17:
+                logger.info("[GATEKEEPER] Allowed via long multi-word slug: %s", url)
+                return True
 
         return False
     except Exception:

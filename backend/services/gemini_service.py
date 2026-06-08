@@ -618,6 +618,29 @@ Rules:
 "gaming laptop under 4000 RON", "office chair", "wireless mouse"
 - Set to null for CHAT/CLARIFY intent.
 
+## GPU Generation Disambiguation (applies to all gaming laptop/desktop searches)
+When a user expresses a GPU floor using "RTX X000+", "RTX Xk or better", or "RTX X-series":
+
+CONSUMER GAMING TIERS — always use these full model names in specific_models and localized_search_query:
+  "RTX 2000+" / "RTX 20xx or newer" → RTX 2060 / RTX 2070 / RTX 2080
+  "RTX 3000+" / "RTX 30xx or newer" → RTX 3060 / RTX 3070 / RTX 3080
+  "RTX 4000+" / "RTX 40xx or newer" → RTX 4060 / RTX 4070 / RTX 4080
+  "RTX 5000+" / "RTX 50xx or newer" → RTX 5060 / RTX 5070 / RTX 5080
+
+PROFESSIONAL / WORKSTATION SERIES — NEVER use for consumer gaming searches:
+  RTX 2000 Ada, RTX 4000 Ada, RTX 4500 Ada, RTX 6000 Ada — professional workstation cards
+  RTX A2000, RTX A4000, RTX A5000, RTX A6000 — NVIDIA professional / datacenter series
+
+CRITICAL: "RTX 2000+" means "gaming RTX 2060/2070/2080" — NOT "RTX 2000 Ada" and NOT "RTX A2000".
+These workstation GPUs are entirely different product lines, cost 3-10× more, and are never
+found in consumer gaming laptops. Never emit a bare "RTX 2000" in a search query — it
+resolves to the workstation Ada GPU, not any consumer card.
+Example — user: "gaming laptop RTX 2000+ 16GB RAM under 10000 RON":
+  ✓ specific_models: ["ASUS TUF Gaming A15 RTX 2060", "Lenovo Legion 5 Gen 7 RTX 2070"]
+  ✓ localized_search_query: "ASUS TUF Gaming A15 RTX 2060"
+  ✗ specific_models: ["laptop RTX 2000 Ada 16GB"] — WRONG: workstation GPU
+  ✗ localized_search_query: "laptop gaming RTX 2000 16GB RAM" — WRONG: maps to workstation series
+
 ## REQUIRED OUTPUT FORMAT
 Respond with a single valid JSON object. No markdown fences. No prose outside the JSON.
 The "local_domains" field must be either a JSON array of domain strings or JSON null — never \

@@ -467,7 +467,7 @@ def _pick_contenders(
         if price is None:
             return True  # unknown price — keep, Gemini will judge
         try:
-            return float(str(price).replace(",", ".")) <= budget_max * 1.15
+            return float(str(price).replace(",", ".")) <= budget_max * 1.10
         except (TypeError, ValueError):
             return True
 
@@ -513,7 +513,7 @@ def _pick_contenders(
     candidates = [
         s for s in scraped
         if (
-            len(s.get("markdown") or "") > 200
+            len(s.get("markdown") or "") > 400
             and _available(s)
             and _in_budget(s)
             and _above_floor(s)
