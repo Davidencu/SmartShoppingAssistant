@@ -354,23 +354,36 @@ URL to scrape
 
 ### URL Shape Filter — Dropping Category Pages Before Scraping
 
-Tavily sometimes returns category/listing/search pages instead of product detail pages (PDPs). Scraping these wastes a slot and yields no useful product data. The `is_likely_product_url()` filter runs on every URL **before** any scrape slot is allocated.
+Tavily sometimes returns category/listing/search pages instead of product detail pages (PDPs), particularly on independent niche sites that keep out-of-stock category archives active for SEO. Scraping these wastes a proxy slot and yields no useful product data. The `is_likely_product_url()` filter evaluates every URL **before** any scrape slot is allocated, using a multi-language exclusion matrix.
 
 ```python
-# Segments that indicate a category or listing page
-_CAT_PATH_RE = re.compile(r"/(?:c|cat|category|collections|browse|sale|promo|
-    search|filter|brand|blog|sitemap|account|cart|checkout|
-    cpl|magazine|zgbs|gp|new-releases|...)(?:/|$|\?)", re.IGNORECASE)
+# Multilingual segments indicating a category or listing page
+# Groups: Categories | Search | Filters | Promotions | Non-product sections | Retailer paths
+_CAT_PATH_RE = re.compile(
+    r"/(?:"
+    r"c|s|cat|category|categories|"
+    r"categorie|kategorie|kategori|kategoria|"           # FR / DE / SE-NO-DK / PL
+    r"department|dept|collections|"
+    r"catalog|catalogo|catalogue|katalog|catalogus|"     # EN / ES-IT / FR / DE-PL / NL
+    r"browse|wholesale|"
+    r"search|results|"
+    r"cautare|recherche|suche|buscar|busqueda|ricerca|"  # RO / FR / DE / ES / ES / IT
+    r"szukaj|zoeken|sok|sog|haku|hledat|kereses|"        # PL / NL / SE / NO / FI / CZ / HU
+    r"filter|filtre|filtru|filtro|filtr|szuro|"          # EN / FR / RO / ES-IT / PL / HU
+    r"sort|tag|brand|brands|sale|promo|promotii|oferte|"
+    r"sitemap|help|about|contact|blog|news|faq|"
+    r"account|cart|checkout|zgbs|gp|new-releases|podcasts"
+    r")(?:/|$|\?)", re.IGNORECASE)
 
-# Query parameters that indicate faceted navigation
-_CAT_PARAM_RE = re.compile(r"[?&](?:category|brand|sort|filter|page|q|
-    query|search|collection)=", re.IGNORECASE)
+# Query parameters indicating faceted navigation
+_CAT_PARAM_RE = re.compile(r"[?&](?:category|cat|department|brand|sort|filter|page|p|offset|from|"
+    r"q|query|search|tag|type|collection|gender|keywords)=", re.IGNORECASE)
 
 # SKU / product-ID patterns in the path
 _SKU_RE = re.compile(r"[-/](?:[A-Z]{1,4}-?\d{4,}|\d{6,}|[a-z]{2,8}-\d{3,})(?:/|$|\?)")
 ```
 
-A URL is allowed through when it has a SKU, depth ≥ 2 + long slug, **or** a depth-1 slug with a numeric product ID embedded (e.g. `bb-shop.ro/ceas-de-mana-morgan-43070.html` — flat-URL stores used by many Romanian and Eastern European retailers).
+A URL is allowed through only when it definitively looks like a product detail page:
 
 ```
 URL passes shape filter when:

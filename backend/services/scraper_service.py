@@ -567,15 +567,31 @@ def _extract_text_bs4(html: str) -> str:
 # ── URL shape heuristics ──────────────────────────────────────────────────────
 
 _CAT_PATH_RE = re.compile(
-    r"/(?:c|s|cat|category|categories|department|dept|collections|browse|"
-    r"toate-sporturile|sport|sports|sale|promo|promotii|oferte|"
-    r"search|results|filter|filtre|sort|tag|brand|brands|"
+    r"/(?:"
+    # ── Categories / Collections / Catalog ───────────────────────────────────
+    r"c|s|cat|category|categories|"
+    r"categorie|kategorie|kategori|kategoria|"           # FR / DE / SE-NO-DK / PL
+    r"department|dept|collections|"
+    r"catalog|catalogo|catalogue|katalog|catalogus|"     # EN / ES-IT / FR / DE-PL / NL
+    r"browse|wholesale|"
+    # ── Search ───────────────────────────────────────────────────────────────
+    r"search|results|"
+    r"cautare|recherche|suche|buscar|busqueda|ricerca|"  # RO / FR / DE / ES / ES / IT
+    r"szukaj|zoeken|sok|sog|haku|hledat|kereses|"        # PL / NL / SE / NO / FI / CZ / HU
+    # ── Filters / Tags ───────────────────────────────────────────────────────
+    r"filter|filtre|filtru|filtro|filtr|szuro|"          # EN / FR / RO / ES-IT / PL / HU
+    r"sort|tag|brand|brands|"
+    # ── Promotions / Sales ───────────────────────────────────────────────────
+    r"sale|promo|promotii|oferte|toate-sporturile|sport|sports|"
+    r"clearance|new-arrivals|best-sellers|seasonal|"
+    # ── Non-product site sections ─────────────────────────────────────────────
     r"sitemap|help|about|contact|blog|blogs|news|articles|faq|pages|"
     r"wishlist|account|login|register|cart|checkout|basket|shop|"
-    r"mens|womens|kids|seasonal|clearance|new-arrivals|best-sellers|"
+    r"mens|womens|kids|"
+    # ── Retailer-specific structural paths ────────────────────────────────────
     r"cpl|comentarii|pagina-producator|magazine|stores|buticuri|"
-    r"wholesale|zgbs|gp|new-releases|infocenter|start-selling|podcasts)"
-    r"(?:/|$|\?)",
+    r"zgbs|gp|new-releases|infocenter|start-selling|podcasts"
+    r")(?:/|$|\?)",
     re.IGNORECASE,
 )
 _CAT_PARAM_RE = re.compile(
