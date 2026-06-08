@@ -481,7 +481,7 @@ RULE 4 — USE A SPECIFIC MODEL NAME, never a generic category.
 Populate local_domains with 3–5 e-commerce domains that best serve the user's location
 and product category. Rules:
 - CRITICAL: You MUST prioritise independent, mid-market, and niche specialist retailers 
-  (e.g., afisport.ro, pcgarage.ro, notino.ro, tradeinn.com).
+  (e.g., afisport.ro, pcgarage.ro, notino.ro, tradeinn.com, veloteca.ro).
 - LIMIT massive enterprise aggregators: You may include a MAXIMUM of ONE giant enterprise 
   domain (like emag.ro, amazon.com, walmart.com, decathlon) as a fallback. 
   The rest of the array MUST be mid-market or independent specialists.

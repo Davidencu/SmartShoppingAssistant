@@ -40,6 +40,7 @@ from curl_cffi.requests import Session
 
 from services.jsonld_service import extract_bs4_facts, extract_jsonld_facts
 
+
 logger = logging.getLogger(__name__)
 
 _CONNECT_TIMEOUT = 10   # seconds to establish TCP + TLS (direct / CF Swarm)
@@ -573,24 +574,20 @@ _CAT_PATH_RE = re.compile(
     r"search|cautare|recherche|suche|buscar|busqueda|ricerca|szukaj|zoeken|sok|sog|"
     r"filter|filtru|filtre|filtro|filtr|szuro"
     r")(?:/|$|\?)",
-    re.IGNORECASE,
+    re.IGNORECASE
 )
 
 _PRODUCT_KEYWORDS = re.compile(
     r"(?:"
-    # Original
     r"biciclet|bike|rucsac|backpack|ceas|watch|laptop|notebook|pantof|shoes|adidas|"
-    # Beauty & Cosmetics (Notino, Douglas)
     r"parfum|perfume|cosmetic|makeup|crem|cream|serum|"
-    # Pets (Zooplus, Petco)
     r"caine|dog|pisic|cat|hrana|food|pet|"
-    # Books & Media (Waterstones, Thalia)
     r"carte|book|joc|game|boardgame|"
-    # Tech & Home (PC Garage, ManoMano)
     r"telefon|phone|tv|televizor|monitor|audio|mobil"
     r")", 
     re.IGNORECASE
 )
+
 _CAT_PARAM_RE = re.compile(
     r"[?&](?:category|cat|department|brand|sort|filter|page|p|offset|from|"
     r"q|query|search|tag|type|collection|gender|keywords)=",
@@ -610,14 +607,7 @@ _SKU_RE = re.compile(
 
 
 def is_likely_product_url(url: str) -> bool:
-    """
-    Heuristic filter: True when the URL looks like a product detail page (PDP),
-    False for category / search / listing pages that waste a scrape slot.
-    """
     try:
-        if _CAT_PATH_RE.search(url):
-            return False
-
         path = urlparse(url).path.strip("/")
         segments = [s for s in path.split("/") if s]
         depth = len(segments)
@@ -625,24 +615,32 @@ def is_likely_product_url(url: str) -> bool:
         if depth == 0:
             return False
 
+        # RULE 1: SKU Rescue evaluates FIRST
         if _SKU_RE.search(url):
+            logger.info("[GATEKEEPER] Allowed via SKU match: %s", url)
             return True
+
+        # RULE 2: Negative Filter evaluates SECOND
+        if _CAT_PATH_RE.search(url) or _CAT_PARAM_RE.search(url):
+            return False
+
+        # RULE 3: Depth Analysis
         if depth >= 2 and len(segments[-1]) > 10:
-            logger.info("[GATEKEEPER] Allowed depth>=2 product: %s", url)
+            logger.info("[GATEKEEPER] Allowed via standard depth: %s", url)
             return True
+            
         if depth == 1 and any(char.isdigit() for char in segments[0] if char in "-_"):
+            logger.info("[GATEKEEPER] Allowed via depth-1 numeric ID: %s", url)
             return True
 
-        # Niche bypass: flat SEO slug containing a product noun lets through
-        # stores that never embed numeric IDs (e.g. /rucsac-columbia-trail-elite).
+        # RULE 4: The Niche Bypass
         if depth == 1 and _PRODUCT_KEYWORDS.search(segments[0]):
-            logger.info("[SHAPE FILTER] allowed depth-1 niche product via keyword pass: %s", url)
+            logger.info("[GATEKEEPER] Allowed via Niche Keyword Pass: %s", url)
             return True
 
-        logger.debug("[SHAPE FILTER] dropped structurally non-conforming URL: %s", url)
         return False
     except Exception:
-        return True  # on parse error, allow through
+        return True
 
 
 def is_cloudflare_challenge(html_content: str, status_code: int) -> bool:
