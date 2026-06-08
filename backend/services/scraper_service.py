@@ -836,8 +836,15 @@ def fetch_via_residential_proxy(target_url: str, target_country: str) -> str | N
     proxy_url = f"http://{proxy_user}:{safe_password}@{_proxy_host}:{_proxy_port}"
     proxies = {"http": proxy_url, "https": proxy_url}
 
-    # logger.warning(f"DEBUG PROXY STRING: {proxy_user}")
-    # logger.warning(f"DEBUG TIMEOUT: {_PROXY_CONNECT_TIMEOUT}")
+    logging.error(f"DEBUG: Host len={len(_proxy_host or '')}, User len={len(_proxy_username or '')}, Pass len={len(_proxy_password or '')}")
+    
+    # Check if they contain whitespace (the silent killer)
+    if (_proxy_password and any(c.isspace() for c in _proxy_password)):
+        logging.error("FATAL: Your password contains whitespace!")
+    # --- END SANITY CHECK ---
+
+    if not (_proxy_host and _proxy_username and _proxy_password):
+        return None
 
     try:
         with Session(impersonate="chrome120") as s:
