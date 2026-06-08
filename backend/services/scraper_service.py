@@ -577,8 +577,19 @@ _CAT_PATH_RE = re.compile(
 )
 
 _PRODUCT_KEYWORDS = re.compile(
-    r"(?:bicicleta|bike|rucsac|backpack|ceas|watch|laptop|notebook|pantofi|shoes|adidasi)",
-    re.IGNORECASE,
+    r"(?:"
+    # Original
+    r"biciclet|bike|rucsac|backpack|ceas|watch|laptop|notebook|pantof|shoes|adidas|"
+    # Beauty & Cosmetics (Notino, Douglas)
+    r"parfum|perfume|cosmetic|makeup|crem|cream|serum|"
+    # Pets (Zooplus, Petco)
+    r"caine|dog|pisic|cat|hrana|food|pet|"
+    # Books & Media (Waterstones, Thalia)
+    r"carte|book|joc|game|boardgame|"
+    # Tech & Home (PC Garage, ManoMano)
+    r"telefon|phone|tv|televizor|monitor|audio|mobil"
+    r")", 
+    re.IGNORECASE
 )
 _CAT_PARAM_RE = re.compile(
     r"[?&](?:category|cat|department|brand|sort|filter|page|p|offset|from|"
