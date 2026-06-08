@@ -16,6 +16,41 @@ from services.supabase_service import get_supabase_admin
 router = APIRouter(prefix="/search", tags=["search"])
 logger = logging.getLogger(__name__)
 
+# ── Demo: mainstream domain blocklist ────────────────────────────────────────
+# Proof-of-concept filter: drop any Tavily result whose domain is in this set
+# so the demo only exercises niche retailers and the ghost-layer fallback.
+# Remove this block (and the filter in _run_product_pipeline) before production.
+_DEMO_BLOCKED_DOMAINS: frozenset[str] = frozenset({
+    # ── North America mainstream ──────────────────────────────────────────────
+    "amazon.com", "walmart.com", "target.com", "bestbuy.com",
+    "costco.com", "macys.com", "nordstrom.com", "apple.com", "nike.com", "adidas.com",
+    # ── UK mainstream ─────────────────────────────────────────────────────────
+    "amazon.co.uk", "currys.co.uk", "argos.co.uk", "johnlewis.com", "asos.com",
+    # ── Germany mainstream ────────────────────────────────────────────────────
+    "amazon.de", "mediamarkt.de", "saturn.de", "otto.de", "zalando.de",
+    # ── France mainstream ─────────────────────────────────────────────────────
+    "amazon.fr", "cdiscount.com", "darty.com", "boulanger.com", "zalando.fr",
+    # ── Italy mainstream ──────────────────────────────────────────────────────
+    "amazon.it", "euronics.it", "trony.it", "mediaworld.it", "unieuro.it",
+    # ── Spain mainstream ──────────────────────────────────────────────────────
+    "amazon.es", "mediamarkt.es",
+    # ── Poland mainstream ─────────────────────────────────────────────────────
+    "amazon.pl", "allegro.pl",
+    # ── Netherlands / Belgium mainstream ─────────────────────────────────────
+    "amazon.nl", "coolblue.nl", "bol.com", "mediamarkt.nl",
+    # ── Romania mainstream ────────────────────────────────────────────────────
+    "emag.ro", "altex.ro", "flanco.ro", "cel.ro",
+    # ── Czech / Slovakia mainstream ───────────────────────────────────────────
+    "mall.cz",
+    # ── Nordics mainstream ────────────────────────────────────────────────────
+    "amazon.se", "power.fi",
+    # ── Global mainstream ─────────────────────────────────────────────────────
+    "amazon.ca", "amazon.com.au", "amazon.co.jp", "amazon.in",
+    "amazon.com.br", "amazon.com.mx",
+    "ebay.com", "ebay.co.uk", "ebay.de", "ebay.fr", "ebay.it", "ebay.es",
+    "zalando.com", "hm.com", "uniqlo.com", "aliexpress.com",
+})
+
 # ── Store display names ───────────────────────────────────────────────────────
 # Maps bare domain → human-readable store name shown in the UI status messages.
 # Domains not listed here fall back to the raw domain string, so the app works
@@ -602,6 +637,15 @@ async def _run_product_pipeline(
         dropped = before_excl - len(tavily_results)
         if dropped:
             logger.info("[P1/TAVILY] dropped %d excluded URL(s)", dropped)
+
+    # ── DEMO: drop mainstream domains ────────────────────────────────────────
+    before_demo = len(tavily_results)
+    tavily_results = [
+        r for r in tavily_results
+        if urlparse(r["url"]).netloc.replace("www.", "") not in _DEMO_BLOCKED_DOMAINS
+    ]
+    if len(tavily_results) < before_demo:
+        logger.info("[DEMO] dropped %d mainstream domain URL(s)", before_demo - len(tavily_results))
 
     # ── STRICT DOMAIN ENFORCEMENT (The Bouncer) ──────────────────────────
     # Tavily's include_domains is a soft hint. We must hard-filter the results
