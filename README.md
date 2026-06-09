@@ -45,44 +45,48 @@ SmartShop is a full-stack AI shopping assistant built around a simple idea: the 
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                        FastAPI Backend                                  │
 │                                                                         │
-│  ┌──────────────┐  ┌──────────────────┐  ┌─────────────┐              │
-│  │ /auth router │  │ /search router   │  │             │              │
-│  │  WebAuthn    │  │  Intent gate     │  │             │              │
-│  │  OTP email   │  │  Cache check     │  │             │              │
-│  │  JWT issue   │  │  Niche-first     │  │             │              │
-│  └──────┬───────┘  │  pipeline (SSE)  │  └─────────────┘              │
-│         │          └────────┬─────────┘                                │
-│         │                   │                                          │
-│         ▼                   ▼                                          │
+│  ┌──────────────┐  ┌──────────────────────────────────────────────┐    │
+│  │ /auth router │  │ /search router                               │    │
+│  │  WebAuthn    │  │  OpenAI Router (gpt-4o-mini) — intent gate   │    │
+│  │  OTP email   │  │  Cache check (pgvector)                      │    │
+│  │  JWT issue   │  │  Tavily radar → Traffic Cop                  │    │
+│  └──────┬───────┘  │  Lane A (niche scraper)                      │    │
+│         │          │  Lane B (Gemini Search Grounding)            │    │
+│         │          │  Gemini judge → SSE stream                   │    │
+│         │          └──────────────────────────────────────────────┘    │
+│         │                                                               │
+│         ▼                                                               │
 │  ┌─────────────────────────────────────────────────────────────────┐   │
 │  │                      Services Layer                             │   │
 │  │                                                                 │   │
-│  │  gemini_service   tavily_service   scraper_service              │   │
-│  │  (intent/score/   (product URL     (CF swarm → direct/lazy     │   │
-│  │   embeddings +     discovery)       residential proxy →         │   │
-│  │   research agent + Groq fallback)   ghost layer + Bloom/LRU)   │   │
+│  │  openai_router        gemini_service         tavily_service     │   │
+│  │  (gpt-4o-mini intent  (scoring, embeddings,  (product URL       │   │
+│  │   + is_mainstream;     research agent,         discovery)        │   │
+│  │   Gemini fallback)     Grounding, Groq CB)                      │   │
 │  │                                                                 │   │
-│  │  retailers_service     jsonld_service      cache_service        │   │
-│  │  (DB-backed domain     (Schema.org         (pgvector            │   │
-│  │   registry, 5-min TTL   extraction)         semantic cache)     │   │
-│  │   niche/mainstream                                              │   │
-│  │   tiers, proxy flags)  logistics_data      supabase_service     │   │
-│  │                        (deterministic       (admin client        │   │
-│  │                         shipping registry)   singleton)         │   │
+│  │  scraper_service       retailers_service     jsonld_service     │   │
+│  │  (curl_cffi stealth    (DB-backed domain     (Schema.org        │   │
+│  │   → residential proxy  registry, 5-min TTL   extraction)        │   │
+│  │   → ghost layer +      niche/mainstream                         │   │
+│  │   Bloom/LRU cache)     tiers, proxy flags)                      │   │
+│  │                                                                 │   │
+│  │  logistics_data        cache_service          supabase_service  │   │
+│  │  (deterministic        (pgvector semantic     (admin client     │   │
+│  │   shipping registry)    cache)                 singleton)       │   │
 │  └──────────────────────────┬──────────────────────────────────────┘   │
 └─────────────────────────────┼───────────────────────────────────────────┘
                               │
-          ┌───────────────────┼──────────────────────┬─────────────────┐
-          ▼                   ▼                       ▼                 ▼
- ┌─────────────────┐  ┌──────────────────┐  ┌──────────────────┐  ┌─────────┐
- │    Supabase      │  │   Gemini 2.5     │  │  Tavily Search   │  │  Groq   │
- │  (PostgreSQL +   │  │   Flash API      │  │  (advanced mode, │  │ (Llama  │
- │   pgvector)      │  │  (intent, score, │  │  optional domain │  │ 3.3-70B │
- │                  │  │   embeddings,    │  │  pinning)        │  │ fallback│
- │  profiles        │  │   research agent)│  └──────────────────┘  └─────────┘
- │  passkeys        │  └──────────────────┘
- │  search_cache    │
- │  chat_history    │
+          ┌───────────────────┼──────────────────────┬──────────────────┐
+          ▼                   ▼                       ▼                  ▼
+ ┌─────────────────┐  ┌──────────────────┐  ┌──────────────────┐  ┌──────────┐
+ │    Supabase      │  │   Gemini 2.5     │  │  Tavily Search   │  │  OpenAI  │
+ │  (PostgreSQL +   │  │   Flash API      │  │  (advanced mode, │  │  (gpt-4o │
+ │   pgvector)      │  │  (scoring,       │  │  optional domain │  │  -mini   │
+ │                  │  │   research,      │  │  pinning)        │  │  intent  │
+ │  profiles        │  │   grounding +    │  └──────────────────┘  │  router) │
+ │  passkeys        │  │   Groq Llama     │                         └──────────┘
+ │  search_cache    │  │   circuit breaker│
+ │  chat_history    │  └──────────────────┘
  │  supported_      │
  │  retailers       │
  │  scrape_cache    │
@@ -97,13 +101,14 @@ SmartShop is a full-stack AI shopping assistant built around a simple idea: the 
 | Layer | Technology |
 |---|---|
 | Frontend | Next.js 15 (App Router), TailwindCSS, TypeScript |
-| Backend | FastAPI (Python 3.14), Uvicorn |
+| Backend | FastAPI (Python 3.12+), Uvicorn |
 | Database | Supabase (PostgreSQL + pgvector) |
-| AI — Intent & Scoring | Gemini 2.5 Flash (`gemini-2.5-flash`) |
-| AI — Fallback | Groq (`llama-3.3-70b-versatile` scoring, `llama-3.1-8b-instant` intent) |
+| AI — Intent Router | OpenAI `gpt-4o-mini` (zero-latency intent + mainstream detection; Gemini fallback) |
+| AI — Scoring & Grounding | Gemini 2.5 Flash (`gemini-2.5-flash`) |
+| AI — Circuit Breaker | Groq (`llama-3.3-70b-versatile` scoring, `llama-3.1-8b-instant` intent) |
 | AI — Embeddings | Gemini Embedding 001 (`gemini-embedding-001`, 768-dim) |
 | Web Search | Tavily (advanced search depth, optional domain filtering) |
-| Web Scraping | `curl_cffi` (6-profile Chrome/Edge stealth rotation) + lazy residential proxy (IPRoyal — direct-first, escalate on failure) + Cloudflare Worker Swarm + `BeautifulSoup4` / `lxml` (JSON-LD + `__NEXT_DATA__` extraction) |
+| Web Scraping | `curl_cffi` (6-profile Chrome/Edge stealth rotation) + lazy residential proxy (IPRoyal — direct-first, escalate on failure) + ghost layer (Google Cache/Archive) + `BeautifulSoup4` / `lxml` (JSON-LD + `__NEXT_DATA__` extraction) |
 | Authentication | WebAuthn / Passkeys (FIDO2 biometric) + OTP email via Supabase |
 
 ---
@@ -169,26 +174,31 @@ SmartShop uses a two-phase registration: email ownership is verified first (OTP)
 
 ## Search Pipeline
 
-Every search message passes through a five-stage pipeline. If any stage fails or finds nothing useful, the system degrades gracefully — retrying globally, explaining why nothing was found, or returning a partial result — rather than showing an error page.
+Every search message passes through a six-stage pipeline. If any stage fails or finds nothing useful, the system degrades gracefully — retrying globally, explaining why nothing was found, or returning a partial result — rather than showing an error page.
 
-Results are streamed to the frontend via **Server-Sent Events (SSE)** — the niche-tier search, research agent insight, and final scored products each arrive as separate JSON events, so the UI updates progressively rather than waiting for the full pipeline.
+Results are streamed to the frontend via **Server-Sent Events (SSE)** — the research agent insight, status updates ("Browsed eMAG (3/12)..."), and final scored products each arrive as separate JSON events, so the UI updates progressively rather than waiting for the full pipeline.
 
 ```
 User message
       │
       ▼
 ┌─────────────────────────────────────────────────────┐
-│ STAGE 1 — INTENT CLASSIFICATION (Gemini, ~0.3s)    │
+│ STAGE 1 — INTENT CLASSIFICATION (gpt-4o-mini, <1s) │
 │                                                     │
-│  Gemini reads the full conversation history and     │
-│  outputs a JSON object containing:                  │
+│  gpt-4o-mini reads the full conversation history    │
+│  and outputs a JSON object containing:              │
 │  • intent: CHAT | CLARIFY | SEARCH                  │
 │  • localized_search_query — e.g. "rucsac laptop"   │
 │    (NOT English — uses local e-commerce terminology)│
 │  • local_domains — 3-5 regional e-commerce sites   │
 │  • is_refinement — true when user refines ("cheaper")
 │  • search_globally — true for explicit global asks  │
+│  • is_mainstream — true for commodity products sold │
+│    by every major retailer (iPhone, PS5, Nike, etc.)│
 │  • collected_params — category, budget, preference  │
+│                                                     │
+│  Falls back to Gemini classify_intent on any        │
+│  OpenAI failure.                                    │
 │                                                     │
 │  CHAT/CLARIFY → return immediately, no scraping    │
 └──────────────────────────┬──────────────────────────┘
@@ -221,134 +231,170 @@ User message
                            │
                            ▼
 ┌─────────────────────────────────────────────────────┐
-│ STAGE 4 — TAVILY PRODUCT DISCOVERY (~1s)           │
+│ STAGE 4 — TAVILY RADAR (~1s)                       │
 │                                                     │
 │  Query = localized_search_query + " buy"           │
 │  (" buy" injected in Python to surface product     │
-│  listing pages rather than manufacturer brand sites)│
+│  listing pages rather than brand sites)            │
 │                                                     │
-│  Four-pass niche-first strategy:                   │
+│  Niche-first strategy:                             │
 │  1. Niche local: specialty stores for the user's   │
 │     country (tier='niche' from supported_retailers)│
 │  2. Mainstream local: large platforms (tier=       │
 │     'mainstream') if niche returns < 3 products    │
 │  3. Niche global: specialty stores worldwide       │
 │  4. Mainstream global: unrestricted fallback        │
-│  Results merged, deduplicated, ~25 total URLs.     │
-│  Excluded URLs stripped before scraping.           │
+│  Results merged, deduplicated, ~20 total URLs.     │
 │                                                     │
-│  ► URL SHAPE FILTER applied here — category,       │
-│    listing, blog, and brand-store URLs dropped      │
-│    before any scrape slot is wasted on them.        │
+│  ► STRICT DOMAIN FILTER ("The Bouncer") applied    │
+│    here — Tavily's domain filtering is a soft hint;│
+│    leaked domains from other retailers are hard-   │
+│    dropped before any processing slot is used.     │
+│  ► Excluded URLs stripped before splitting.        │
 └──────────────────────────┬──────────────────────────┘
                            │
                            ▼
 ┌─────────────────────────────────────────────────────┐
-│ STAGE 5 — SCRAPE + SCORE (~4-6s)                   │
+│ STAGE 5 — TRAFFIC COP + TWO-LANE FETCH (~2-5s)     │
 │                                                     │
-│  ┌─ PHASE 2: Hybrid Waterfall + Filter (~1-2s) ───┐ │
-│  │  Blast all filtered URLs in parallel.          │ │
-│  │  Per URL: CF Worker → direct (residential      │ │
-│  │  proxy) → ghost layer (Google Cache/Archive).  │ │
-│  │  JSON-LD + BS4 + __NEXT_DATA__ extraction.     │ │
-│  │  Discard: out-of-stock, over-budget, <200      │ │
-│  │  chars of content.                             │ │
-│  │  Output: top 10 "contender" URLs ranked        │ │
-│  │  by data richness (has price/rating/name).     │ │
-│  └───────────────────────┬────────────────────────┘ │
-│                          │                          │
-│  ┌─ PHASE 3: Gemini Judge (~2-3s) ───────────────┐ │
-│  │  All 10 contender pages sent to Gemini in one │ │
-│  │  prompt. Gemini performs:                     │ │
-│  │  A. Purchasability check (JSON-LD Tier 1 or   │ │
-│  │     buy-button text — see AI Scoring section) │ │
-│  │  B. Budget hard limit check (120% ceiling)    │ │
-│  │  C. 40-point scoring across 4 dimensions      │ │
-│  │  Output: top 3 ranked products with reasoning.│ │
-│  │  value_score recomputed deterministically in  │ │
-│  │  Python; hallucinated URLs dropped.           │ │
-│  │  Groq (Llama 3.3-70B) activated automatically │ │
-│  │  when Gemini returns 429/ServerError.         │ │
+│  sort_urls_for_lanes() classifies each URL:        │
+│                                                     │
+│  ┌─ LANE A: Niche Specialty Pages ───────────────┐ │
+│  │  Domain is tier='niche' in supported_retailers │ │
+│  │  AND URL shape passes the product-detail       │ │
+│  │  filter (is_likely_product_url).               │ │
+│  │                                               │ │
+│  │  Processing: curl_cffi stealth scraper →      │ │
+│  │  residential proxy (on block) → ghost layer.  │ │
+│  │  JSON-LD + BS4 extraction.                    │ │
 │  └───────────────────────────────────────────────┘ │
-└─────────────────────────────────────────────────────┘
+│                                                     │
+│  ┌─ LANE B: Enterprise / Category Pages ─────────┐ │
+│  │  Mainstream retailers (Amazon, eMAG, Decathlon │ │
+│  │  etc.) or any URL that is a category/listing   │ │
+│  │  page rather than a product detail page.       │ │
+│  │                                               │ │
+│  │  Processing: Gemini Flash + Google Search     │ │
+│  │  Grounding reads the page and returns up to   │ │
+│  │  3 specific in-stock products as structured   │ │
+│  │  cards (name, price, direct product URL,      │ │
+│  │  availability). No scraper needed.            │ │
+│  └───────────────────────────────────────────────┘ │
+│                                                     │
+│  Both lanes run in parallel. Results merged.       │
+│  _pick_contenders: drops OOS, over-budget, wrong   │
+│  category, below price floor. Ranks by richness.  │
+│  Output: top 10 contenders for Gemini judge.       │
+└──────────────────────────┬──────────────────────────┘
                            │
                            ▼
 ┌─────────────────────────────────────────────────────┐
-│ STAGE 6 — CACHE & PERSIST (background tasks)       │
+│ STAGE 6 — GEMINI JUDGE + CACHE (~2-3s)             │
 │                                                     │
-│  Results saved to pgvector search_cache (6h TTL).  │
+│  All contenders sent to Gemini in one prompt.      │
+│  Gemini performs:                                  │
+│  A. Purchasability check (JSON-LD Tier 1 or        │
+│     buy-button text)                               │
+│  B. Budget hard limit check (120% ceiling)         │
+│  C. 40-point scoring across 4 dimensions           │
+│  Output: top 3 ranked products with reasoning.     │
+│  value_score recomputed deterministically in       │
+│  Python; hallucinated URLs dropped.                │
+│  Groq (Llama 3.3-70B) activated automatically     │
+│  when Gemini returns 429/ServerError.              │
+│  Heuristic price-sort fallback when all AI         │
+│  scorers are unavailable.                          │
+│                                                     │
+│  Results saved to pgvector search_cache (6h TTL). │
 │  Chat turn saved to chat_history.                  │
-│  Both writes are fire-and-forget background tasks  │
-│  — user receives the response without waiting.     │
+│  Both writes are fire-and-forget background tasks. │
 └─────────────────────────────────────────────────────┘
 ```
 
+### OpenAI Front-End Router
+
+The first gate in the pipeline is `gpt-4o-mini`, not Gemini. `gpt-4o-mini` is faster and cheaper for intent classification, and it adds one extra field that Gemini's prompt did not previously produce: `is_mainstream`.
+
+**`is_mainstream` detection** — when `true`, the product is a mass-market commodity primarily sold by enterprise giants (iPhones, PS5, Nike Air Max, Samsung TVs, Bosch appliances). Commodity products have more category/listing pages in Tavily results than product detail pages, so they naturally flow into Lane B where Gemini Grounding handles them well. Niche products (specialty cycling gear, audiophile headphones, artisan goods) flow into Lane A where the traditional scraper is more effective.
+
+If `OPENAI_API_KEY` is absent or OpenAI returns an error, the router automatically falls back to `gemini_service.classify_intent`.
+
+### Traffic Cop — Lane A vs Lane B
+
+The Traffic Cop (`sort_urls_for_lanes`) runs after Tavily returns URLs. It asks two questions per URL:
+
+1. Is the domain listed as `tier='niche'` in the `supported_retailers` table?
+2. Does the URL shape look like a product detail page (`is_likely_product_url`)?
+
+**Both must be true for Lane A.** Anything else goes to Lane B.
+
+This matters because enterprise retailers like Amazon and eMAG aggressively block scrapers, and the URLs Tavily returns for them are often category pages or search results pages anyway — not individual product pages. Rather than wasting a scraper slot and a proxy on a URL that will either be blocked or return unhelpful content, Lane B sends those URLs directly to Gemini Grounding which uses Google's index to find specific in-stock products from that retailer within the user's budget.
+
 ### Niche-First Pipeline
 
-The pipeline tries specialty/mid-market stores (tier=`'niche'`) before large mainstream platforms. Niche stores typically have better scrapability (fewer anti-bot defences), richer JSON-LD data, and carry products that aggregators like Amazon/eMAG don't stock. If niche stores turn up fewer than 3 scorable products, the pipeline transparently falls back to mainstream — a status message is streamed so the user knows the search widened.
+The pipeline tries specialty/mid-market stores (tier=`'niche'`) before large mainstream platforms. Niche stores typically have better scrapability (fewer anti-bot defences), richer JSON-LD data, and carry products that aggregators like Amazon don't stock. If niche stores turn up fewer than 3 scorable products, the pipeline transparently falls back to mainstream — a status message is streamed so the user knows the search widened.
 
-Retailer tier and proxy-required flags are sourced from the `supported_retailers` Supabase table (managed by `retailers_service.py` with a 5-minute in-memory TTL cache), replacing the previous hardcoded `_HARD_DOMAINS` frozenset and Gemini-guessed domain lists.
+Retailer tier and proxy-required flags are sourced from the `supported_retailers` Supabase table (managed by `retailers_service.py` with a 5-minute in-memory TTL cache).
 
 ### Global Fallback
 
-If no local retailer has the product in stock or within budget, the pipeline automatically widens the search to the entire web with no country restriction. The user sees a friendly note explaining what happened: *"I couldn't find this on local retailers — here are the best global options."* No dead ends.
+If no local retailer has the product in stock or within budget, the pipeline automatically widens the search to the entire web with no country restriction. The user sees a friendly note explaining what happened. No dead ends.
 
 ### Dynamic Budget Drop
 
-When the user says "find me something cheaper", SmartShop doesn't just search for the same thing with a vague "lower budget" instruction. It reads the prices of the products it just showed, takes the cheapest one, and sets the new ceiling at 80% of that price — computed from the actual numbers, not guessed. For example: if the three products shown cost 1799, 1950, and 1600 RON, the new budget becomes 1280 RON (80% of 1600).
+When the user says "find me something cheaper", SmartShop reads the prices of the products it just showed, takes the cheapest one, and sets the new ceiling at 80% of that price — computed from the actual numbers, not guessed. For example: if the three products shown cost 1799, 1950, and 1600 RON, the new budget becomes 1280 RON (80% of 1600).
+
+### Multilingual Status Messages
+
+All pipeline status messages (shown to the user during the search) are translated into the user's detected language. Supported: English, Romanian, German, French, Italian, Spanish, Polish, Dutch, Portuguese. The language is detected from Gemini's `language_code` field in the intent response.
 
 ---
 
 ## Stealth Scraping Architecture
 
-Enterprise firewalls (Cloudflare, Akamai, Imperva) inspect every inbound HTTP request across three axes: **TLS fingerprint**, **request headers**, and **behavioural patterns**. A naive scraper fails all three. SmartShop addresses each one explicitly, and adds a three-phase waterfall so that even the hardest sites (Amazon, Walmart) are reachable.
+Enterprise firewalls (Cloudflare, Akamai, Imperva) inspect every inbound HTTP request across three axes: **TLS fingerprint**, **request headers**, and **behavioural patterns**. A naive scraper fails all three. SmartShop addresses each one explicitly.
 
-### Global Hybrid Pipeline Waterfall
+> **Note:** The Cloudflare Worker Swarm previously used as a proxy layer has been removed. The current fetch strategy is: `curl_cffi` direct → residential proxy (on block) → ghost layer (Google Cache / Internet Archive).
 
-Every URL goes through three phases in order. The result of the first successful phase is returned — remaining phases are skipped.
+### Global Fetch Waterfall
+
+Every Lane A URL goes through three attempts in order. The result of the first successful attempt is returned — remaining attempts are skipped.
 
 ```
-URL to scrape
+URL to scrape (Lane A only)
       │
       ▼
 ┌──────────────────────────────────────────────────────────────────┐
-│ PHASE 1a — Cloudflare Worker Swarm (all domains)                 │
+│ ATTEMPT 1 — Direct curl_cffi (no proxy)                          │
 │                                                                  │
-│  Request proxied through Cloudflare edge PoPs.                   │
-│  Worker IPs are not in cloud/datacenter block-lists that         │
-│  Amazon and Walmart screen against.                              │
-│  Workers tried in round-robin; soft-block per-worker checked.    │
-│  ✓ Success → return parsed result                                │
-│  ✗ All workers 403 → fall through                                │
+│  Skip for domains flagged requires_proxy=TRUE in                 │
+│  supported_retailers, or any domain in hostile_domains.          │
+│  ✓ HTTP 200 + valid content  →  return immediately               │
+│  ✗ HTTP 429                  →  escalate to proxy (rate-limited) │
+│  ✗ HTTP 403 / 503            →  escalate to proxy (WAF block)    │
+│  ✗ Soft-block (< 5 KB or no structured data markers)            │
+│                              →  escalate to proxy                │
 └──────────────────────────┬───────────────────────────────────────┘
-                           │ Phase 1a blocked
+                           │ Attempt 1 blocked
                            ▼
 ┌──────────────────────────────────────────────────────────────────┐
-│ PHASE 1b — Direct curl_cffi with Lazy Residential Proxy          │
+│ ATTEMPT 2 — Residential proxy (IPRoyal, geo.iproyal.com:12321)   │
 │                                                                  │
-│  Two-attempt waterfall per URL:                                  │
-│  Attempt 1 — Free direct connection (no proxy).                  │
-│    Skip for hard domains (from supported_retailers where         │
-│    requires_proxy=TRUE) or any domain already learned to         │
-│    require a proxy (hostile_domains table / session cache).      │
-│  Attempt 2 — Residential proxy escalation (IPRoyal,              │
-│    geo.iproyal.com:12321). Activated on 429, 403/503, or a       │
-│    soft-block from attempt 1. The domain is persisted to the     │
-│    hostile_domains Supabase table so future server restarts      │
-│    skip the wasted direct hop immediately.                        │
-│  ✓ Either attempt succeeds → return parsed result                │
-│  ✗ Proxy also blocked → fall through                             │
+│  Domain is persisted to hostile_domains Supabase table on first  │
+│  failure, so future server restarts skip attempt 1 immediately.  │
+│  ✓ HTTP 200 + valid content  →  return result                    │
+│  ✗ Still blocked             →  fall to ghost layer              │
 └──────────────────────────┬───────────────────────────────────────┘
-                           │ Phase 1b blocked
+                           │ Both attempts blocked
                            ▼
 ┌──────────────────────────────────────────────────────────────────┐
-│ PHASE 2 — Ghost Layer (Google Cache → Internet Archive)          │
+│ ATTEMPT 3 — Ghost Layer (Google Cache → Internet Archive)        │
 │                                                                  │
 │  Google has already crawled the page. Static snapshot still      │
 │  contains full JSON-LD structured data — price, availability,    │
 │  rating — even without live JS execution.                        │
 │  Falls back to Internet Archive if Google cache misses.          │
-│  Free, no API key. Used only after both live phases fail.        │
+│  Free, no API key.                                               │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
@@ -374,13 +420,6 @@ _CAT_PATH_RE = re.compile(
     r"sitemap|help|about|contact|blog|news|faq|"
     r"account|cart|checkout|zgbs|gp|new-releases|podcasts"
     r")(?:/|$|\?)", re.IGNORECASE)
-
-# Query parameters indicating faceted navigation
-_CAT_PARAM_RE = re.compile(r"[?&](?:category|cat|department|brand|sort|filter|page|p|offset|from|"
-    r"q|query|search|tag|type|collection|gender|keywords)=", re.IGNORECASE)
-
-# SKU / product-ID patterns in the path
-_SKU_RE = re.compile(r"[-/](?:[A-Z]{1,4}-?\d{4,}|\d{6,}|[a-z]{2,8}-\d{3,})(?:/|$|\?)")
 ```
 
 A URL is allowed through only when it definitively looks like a product detail page:
@@ -394,6 +433,10 @@ URL passes shape filter when:
   has_id_slug  — depth-1 with 3+ digit product ID   e.g. /ceas-de-mana-boss-70934.html
 ```
 
+This filter is applied in two places:
+- **Before Lane A scraping** — drops category URLs before any network I/O
+- **Inside Lane B** — Gemini Grounding may return a category URL; it is dropped before being added to the contender set
+
 ### SPA Soft-Block Detection
 
 A site may return HTTP 200 with an empty React shell (< 5 KB, no structured data) when its WAF blocks the scraper without revealing the rejection. `is_valid_product_page()` catches these before they enter the contender pipeline:
@@ -404,8 +447,6 @@ A site may return HTTP 200 with an empty React shell (< 5 KB, no structured data
 | 5–15 KB | No JSON-LD, `__NEXT_DATA__`, or Vue state | **Blocked** — no product data markers |
 | 5–15 KB | Has any of the above | **Pass** — SPA with SSR data |
 | > 15 KB | — | **Pass** — enough raw content for BS4 |
-
-Soft-blocked pages from the CF Worker Swarm try the next worker before escalating to the ghost layer.
 
 ### 1. TLS Fingerprint Rotation — 6 browser profiles
 
@@ -422,26 +463,11 @@ Soft-blocked pages from the CF Worker Swarm try the next worker before escalatin
 
 **Selection is deterministic per domain** (MD5 hash of domain → index). This is a deliberate design choice: randomly cycling fingerprints *per request* is a bot signal — a human's browser does not switch from Chrome 124 to Edge 101 between two page loads. Locking a fingerprint to a domain builds session trust with the firewall, while the spread across 6 profiles means no single JA3 hash touches every retailer on the platform.
 
-Curated per-domain overrides bypass the hash for known sites where empirical testing shows a specific fingerprint works best. Safari profiles (`safari17_0`) slip through Amazon/Walmart WAFs — their bot-detection is tuned to Chrome fingerprints.
+Curated per-domain overrides bypass the hash for known sites where empirical testing shows a specific fingerprint works best.
 
 ### 2. Residential Proxy Integration — Lazy / Reactive
 
 The residential proxy (IPRoyal, `geo.iproyal.com:12321`) is used **reactively** — the scraper tries a free direct connection first and only escalates to the proxy when the direct attempt fails. This eliminates unnecessary proxy bandwidth and cost for the majority of requests that succeed on direct.
-
-**Two-attempt waterfall inside `_fetch_direct_sync`:**
-
-```
-Attempt 1 — Free direct connection (curl_cffi, no proxy)
-  ├─ HTTP 200 + valid content  →  return immediately (proxy never touched)
-  ├─ HTTP 429                  →  escalate to proxy (rate-limited)
-  ├─ HTTP 403 / 503            →  escalate to proxy (WAF rejection)
-  └─ Soft-block (< 5 KB or no │
-       structured data markers)→  escalate to proxy
-
-Attempt 2 — Residential proxy escalation
-  ├─ HTTP 200 + valid content  →  return result
-  └─ Still blocked             →  mark _blocked=True, fall to ghost layer
-```
 
 **Learner pattern — `hostile_domains` (Supabase table)**
 
@@ -449,9 +475,7 @@ The first time a domain fails the direct attempt, it is added to an in-memory se
 
 **Hard-coded hostile domains — `requires_proxy=TRUE` in `supported_retailers`**
 
-Amazon (all regional TLDs), Walmart, and similar sites are flagged `requires_proxy=TRUE` in the `supported_retailers` table — empirical testing confirmed that datacenter IPs (including CF Workers) are blocked at the network edge regardless of TLS fingerprint.
-
-**Return-policy fetches** apply the same rule: the proxy is used only when the domain is flagged in `supported_retailers` or `hostile_domains`.
+Amazon (all regional TLDs), Walmart, and similar sites are flagged `requires_proxy=TRUE` in the `supported_retailers` table — empirical testing confirmed that datacenter IPs are blocked at the network edge regardless of TLS fingerprint.
 
 The proxy is optional. When `PROXY_HOST` / `PROXY_PORT` / `PROXY_USERNAME` / `PROXY_PASSWORD` are absent, escalations that would use the proxy instead mark the result as blocked immediately.
 
@@ -478,20 +502,26 @@ The 403 and 429 status codes require fundamentally different responses:
 
 | Status | Meaning | Action |
 |---|---|---|
-| **429** | Rate-limited — too many requests | Keep same profile (fingerprint cycling at machine-speed from the same IP is an instant permanent ban signal). Sleep `2.0–4.0s` random jitter, then retry once. |
-| **403 / 503** | WAF/fingerprint rejection | Sleep `2.0–3.5s` first (switching at 0ms confirms a cycling script), then retry once with the next profile in the rotation. Domain-specific overrides (e.g. `safari17_0`) that are not in the main rotation list fall back to `chrome131` as the alternate profile. |
+| **429** | Rate-limited — too many requests | Keep same profile. Sleep `2.0–4.0s` random jitter, then retry once. |
+| **403 / 503** | WAF/fingerprint rejection | Sleep `2.0–3.5s` first, then retry once with the next profile in the rotation. |
 
-The jitter range prevents the server from seeing a predictable cadence even across retries. No more than one retry is attempted per URL — the goal is to pass a single checkpoint, not to hammer a blocked endpoint.
+The jitter range prevents the server from seeing a predictable cadence even across retries. No more than one retry is attempted per URL.
 
 ### 6. Buy-Button Text Preservation
 
-`<form>` elements used to be fully stripped from the extracted page text (along with scripts and nav bars). This silently removed "Add to Cart" / "Adaugă în coș" / "Cumpără" buttons — the very signals Gemini uses to confirm a page is purchasable. The extractor now replaces each form with the concatenated text of its buttons and input labels rather than discarding them entirely.
+`<form>` elements used to be fully stripped from the extracted page text. This silently removed "Add to Cart" / "Adaugă în coș" / "Cumpără" buttons — the very signals Gemini uses to confirm a page is purchasable. The extractor now replaces each form with the concatenated text of its buttons and input labels:
 
 ```python
 for form in soup.find_all("form"):
     buttons = " ".join(b.get_text(" ", strip=True) for b in form.find_all(["button", "input"]))
     form.replace_with(soup.new_string(buttons))
 ```
+
+### Multilingual Out-of-Stock Detection
+
+The contender filter checks product pages for OOS signals in 20+ languages before sending them to the Gemini judge. This prevents out-of-stock pages from consuming scoring budget and appearing in results.
+
+Languages covered: English, Romanian, French, German, Spanish, Italian, Polish, Dutch, Portuguese, Swedish, Norwegian, Danish, Finnish, Czech, Slovak, Hungarian, Greek, Turkish, Russian, Japanese, Korean, Chinese.
 
 ---
 
@@ -503,8 +533,8 @@ Every product is scored across four dimensions in one Gemini call. The scores ar
 |---|---|---|
 | `cost_efficiency` | 40% | Real value for the price paid. Being well under budget is rewarded, not penalised. |
 | `quality_confidence` | 35% | Confidence in product quality: ratings, review counts, spec signals, quality badges. |
-| `logistics` | 15% | Shipping cost, delivery speed, and availability to the user's location. Sourced from `logistics_data.py` registry for known retailers; dynamic extraction for unknown ones. |
-| `trust` | 10% | Seller reputation and return policy. Official brand stores with generous return windows score higher than unknown third-party sellers. |
+| `logistics` | 15% | Shipping cost, delivery speed, and availability to the user's location. |
+| `trust` | 10% | Seller reputation and return policy. |
 
 **Score anchors (0–100 per dimension):**
 - `40` = information not found on the page — treated as "unknown", not a failure
@@ -526,6 +556,8 @@ Before scoring, Gemini must find at least one purchasability signal from either 
 
 Pages where neither tier applies are eliminated — they are manufacturer spec sheets, blog posts, or out-of-stock placeholders.
 
+Lane B results have `has_buy_button: True` set by design — Gemini Grounding only returns confirmed in-stock products, so they skip the purchasability check.
+
 ### Groq Circuit Breaker
 
 When Gemini returns `429 Too Many Requests` or `ServerError` after all retries, the scoring and intent calls automatically fall over to Groq:
@@ -535,16 +567,11 @@ When Gemini returns `429 Too Many Requests` or `ServerError` after all retries, 
 | Scoring | `llama-3.3-70b-versatile` | Receives a compact prompt (~6k tokens vs ~21k for Gemini) |
 | Intent classification | `llama-3.1-8b-instant` | Same JSON output schema as Gemini |
 
-**Compact scoring prompt (`_build_compact_scoring_prompt`):** Groq's free tier is capped at 12k tokens per minute. The compact prompt sends only the JSON-LD `facts_header` + product title per product — omitting full markdown, logistics context, and return policy text. For 10 products this is ~6k tokens vs ~21k for the full Gemini prompt. The scored output format is identical so the same parsing code handles both.
+**Compact scoring prompt (`_build_compact_scoring_prompt`):** Groq's free tier is capped at 12k tokens per minute. The compact prompt sends only the JSON-LD `facts_header` + product title per product — omitting full markdown, logistics context, and return policy text. The scored output format is identical so the same parsing code handles both.
 
-The Groq client is optional. If `GROQ_API_KEY` is absent or the import fails, Groq is silently disabled and the circuit breaker is a no-op.
+**Heuristic fallback:** If both Gemini and Groq are unavailable, the pipeline falls back to a simple price-sort: in-budget products first, ordered by ascending price, with a note that AI scoring was unavailable. Users still get ranked results rather than an error.
 
-### Global vs. Local Scoring Mode
-
-When `is_global=True`, three prompt blocks are swapped:
-- **Currency block**: authorises exchange-rate conversions — foreign-currency products are not penalised
-- **Search context**: drops local delivery constraints
-- **Logistics rubric**: shifts to international shipping availability rather than same-day local delivery
+The Groq client is optional. If `GROQ_API_KEY` is absent or the import fails, Groq is silently disabled.
 
 ---
 
@@ -586,13 +613,13 @@ Handles Romanian price format (`"1 799,00"` → `1799.0`), availability URLs (`s
 
 Targets the three common data sources that JSON-LD regularly misses on Romanian and international e-commerce sites.
 
-| Source | What it extracts | Score rescued |
-|---|---|---|
-| Open Graph / Product `<meta>` tags | `og:price:amount`, `product:price:currency`, `og:availability`, `product:rating:value`, `product:rating:count` | `cost_efficiency`, `logistics`, `quality` |
-| `og:site_name` / `application-name` | Retailer name (eMAG, Altex, Amazon…) | `trust` |
-| `itemprop` content= attribute | `price`, `priceCurrency`, `availability`, `ratingValue`, `reviewCount` — read from the `content=` attribute, not display text | all dimensions |
-| `aria-label` star ratings | `"4.7 out of 5 stars"`, `"4.7 din 5 stele"`, `"4.7 von 5 Sternen"`, `"rated 4.7"` — multi-language regex | `quality` |
-| `data-price`, `data-gtm-price`, `data-product-price`, … | GTM / GA tracking payload prices (present even when JS renders the display price) | `cost_efficiency` |
+| Source | What it extracts |
+|---|---|
+| Open Graph / Product `<meta>` tags | `og:price:amount`, `product:price:currency`, `og:availability`, `product:rating:value`, `product:rating:count` |
+| `og:site_name` / `application-name` | Retailer name (eMAG, Altex, Amazon…) |
+| `itemprop` content= attribute | `price`, `priceCurrency`, `availability`, `ratingValue`, `reviewCount` |
+| `aria-label` star ratings | `"4.7 out of 5 stars"`, `"4.7 din 5 stele"`, `"4.7 von 5 Sternen"`, `"rated 4.7"` — multi-language regex |
+| `data-price`, `data-gtm-price`, `data-product-price`, … | GTM / GA tracking payload prices |
 
 Both extractors are wrapped in `@functools.lru_cache(maxsize=256)` — for popular products requested by multiple concurrent users, parsing runs once and all subsequent callers get the cached dict in O(1).
 
@@ -637,7 +664,7 @@ For retailers not in the registry, the system performs two extra steps automatic
 
 **Hop 1 — The Footer Sniper**
 
-The raw HTML is scanned for links whose address or visible text contains words like `shipping`, `delivery`, `livrare` (Romanian), `versand` (German), `livraison` (French), and so on. Both the URL slug and the clickable text are checked, so a link labelled "Livrare și Retur" is found just as reliably as one at `/pages/shipping-policy`. If a shipping policy link is found, its URL is saved. If a returns/refunds link is found too, that page is fetched immediately and its text is stored for the trust scorer.
+The raw HTML is scanned for links whose address or visible text contains words like `shipping`, `delivery`, `livrare` (Romanian), `versand` (German), `livraison` (French), and so on. If a shipping policy link is found, its URL is saved. If a returns/refunds link is found too, that page is fetched immediately and its text is stored for the trust scorer.
 
 **Hop 2 — The Logistics Micro-Agent**
 
@@ -667,21 +694,19 @@ The prompt includes approximate conversion rates (1 EUR ≈ 5 RON, 1 USD ≈ 4.6
 
 ### Performance — domain-level caching
 
-Logistics data runs **once per domain per server session**, not once per product. If a search returns three products from emag.ro, the shipping policy is fetched on the first product and the result is reused for the other two instantly. The `_logistics_cache` dict (keyed by domain) and the scraper's `_policy_cache` both persist in memory for the lifetime of the server process, surviving across multiple user searches.
+Logistics data runs **once per domain per server session**, not once per product. If a search returns three products from emag.ro, the shipping policy is fetched on the first product and the result is reused for the other two instantly.
 
 ---
 
 ## Network Performance Under Load
 
-When many users simultaneously search for popular products — gaming laptops, iPhones, running shoes — the simplest approach would be to scrape the same pages over and over for every request. That wastes server resources, slows everyone down, and risks getting the server's IP address blocked by e-commerce sites for making too many requests too quickly.
+When many users simultaneously search for popular products, the simplest approach would be to scrape the same pages over and over for every request. That wastes server resources, slows everyone down, and risks getting the server's IP address blocked.
 
 Four complementary mechanisms prevent this.
 
 ### 1. Bloom Filter — remembering 100,000 URLs in 120 KB
 
 **In plain terms:** the server needs to remember which product pages it has already scraped so it doesn't fetch them again. Storing 100,000 full URLs as text would use 5–10 MB of RAM. A Bloom filter stores the same information in 120 KB — about the size of a small image — by recording a compact mathematical fingerprint of each URL instead of the URL itself.
-
-A Bloom filter is a probabilistic bit-array that answers "have we scraped this URL before?" using a fraction of the RAM a regular Python `set` would need.
 
 ```
 BloomFilter(capacity=100_000, error_rate=0.01)
@@ -697,21 +722,7 @@ False positives: ~1% at capacity — at most 1 in 100 unseen URLs is
 
 **How it works — Kirsch-Mitzenmacher double-hashing:**
 
-Two cheap digests (MD5 + SHA-1) are computed once per URL. All `k` hash positions are derived from them via `(h1 + i·h2) % m`, avoiding `k` separate hash calls regardless of how many hash functions are configured.
-
-```python
-def _positions(self, item: str) -> list[int]:
-    h1 = int.from_bytes(md5(item.encode()).digest(), "little")
-    h2 = int.from_bytes(sha1(item.encode()).digest(), "little")
-    return [(h1 + i * h2) % self._size for i in range(self._hash_count)]
-```
-
-Optimal parameters are computed from `capacity` and `error_rate` at construction time using the standard Bloom filter formulae:
-
-```
-m (bit-array size) = ⌈-n · ln(p) / (ln 2)²⌉
-k (hash functions) = ⌈(m/n) · ln 2⌉
-```
+Two cheap digests (MD5 + SHA-1) are computed once per URL. All `k` hash positions are derived from them via `(h1 + i·h2) % m`, avoiding `k` separate hash calls.
 
 ### 2. Two-Level Scrape Cache — Bloom + LRU
 
@@ -730,52 +741,27 @@ Request arrives for URL
   Return cached result instantly  (0 network calls, 0 CPU)
 ```
 
-`_LRUCache` uses `OrderedDict` with `move_to_end` on every access (O(1)) and `popitem(last=False)` to evict the least-recently-used entry when at capacity (2 000 pages, ~20–100 KB each → at most ~200 MB upper bound).
+`_LRUCache` uses `OrderedDict` with `move_to_end` on every access (O(1)) and `popitem(last=False)` to evict the least-recently-used entry when at capacity (2 000 pages).
 
-```python
-def get(self, key: str) -> Optional[dict]:
-    if key not in self._store:
-        return None
-    self._store.move_to_end(key)       # mark as recently used
-    return self._store[key]
-
-def put(self, key: str, value: dict) -> None:
-    if key in self._store:
-        self._store.move_to_end(key)
-        self._store[key] = value       # update value in-place
-    else:
-        if len(self._store) >= self._maxsize:
-            self._store.popitem(last=False)   # evict LRU entry
-        self._store[key] = value
-```
-
-Scrape results are also persisted to the `scrape_cache` Supabase table (24-hour TTL), so a cold-started server benefits from URLs already scraped by prior sessions rather than starting from zero.
+Scrape results are also persisted to the `scrape_cache` Supabase table (24-hour TTL), so a cold-started server benefits from URLs already scraped by prior sessions.
 
 ### 3. `@lru_cache` on HTML Parsing — CPU deduplication
 
-Parsing raw HTML with regex, `json.loads`, and BeautifulSoup is CPU-intensive. When 50 users simultaneously search for the same iPhone model, they will all receive the same HTML from the product page. Without caching, both extractors run 50 times for identical input.
-
-`@functools.lru_cache(maxsize=256)` turns repeated calls with the same HTML string into O(1) dict lookups:
+Parsing raw HTML with regex, `json.loads`, and BeautifulSoup is CPU-intensive. `@functools.lru_cache(maxsize=256)` turns repeated calls with the same HTML string into O(1) dict lookups:
 
 ```python
-@functools.lru_cache(maxsize=_JSONLD_CACHE_SIZE)   # 256 unique HTML pages
+@functools.lru_cache(maxsize=256)
 def extract_jsonld_facts(text: str) -> dict:
     ...
 
-@functools.lru_cache(maxsize=_JSONLD_CACHE_SIZE)   # same budget, same benefit
+@functools.lru_cache(maxsize=256)
 def extract_bs4_facts(html: str) -> dict:
     ...
 ```
 
-Both caches are cleared together by `cache_service.clear_all_caches()` via their respective `.cache_clear()` calls.
-
-At 256 entries × ~50 KB average HTML ≈ 13 MB upper bound on retained strings.
-
 > **Immutability contract**: the cached dict must not be mutated by callers. Downstream code that needs to modify extracted facts must copy the dict first.
 
 ### 4. Priority Queue Scraper Scheduler — polite to servers, fast for users
-
-**In plain terms:** if SmartShop scrapes pages at full speed for background tasks, e-commerce sites will eventually block its IP address. But slowing everything down to avoid bans would make real user searches feel sluggish. The priority queue solves this by giving live user searches immediate processing while making background tasks wait a few seconds between each request — polite enough to avoid bans, fast enough for real-time use.
 
 Instead of applying a fixed sleep between all scrapes (which slows everyone down equally), a min-heap priority queue assigns each scrape task a weight:
 
@@ -787,29 +773,7 @@ Instead of applying a fixed sleep between all scrapes (which slows everyone down
 | P4 — Cache refresh | 4 | 2.0 s | Refreshing near-expiry results |
 | P5 — Background | 5 | **3.0 s** | Background stock-data refresh |
 
-Items are stored as `(priority, seq, url, future)` tuples. The monotonic `seq` counter acts as a tiebreaker within the same priority level, ensuring FIFO ordering and preventing Python from ever needing to compare `asyncio.Future` objects (which are not orderable and would raise `TypeError`).
-
-```
-asyncio.PriorityQueue (min-heap)
-
-  (P1, 1, "user-url-A", future_A)   ← dequeued first
-  (P1, 2, "user-url-B", future_B)   ← dequeued second
-  (P5, 3, "background-url", future) ← dequeued last, 3 s delay after
-```
-
-Five async workers drain the queue concurrently. A P5 worker sleeping for 3 s does not block P1 items — the other four workers remain available. Workers start lazily on the first `submit()` call so no background tasks run while the server is idle.
-
-```
-                    ┌──────────────────────────────────┐
-  submit(url, P1) ──►                                  │
-  submit(url, P5) ──►   asyncio.PriorityQueue          ├──► worker 1 (P1, instant)
-  submit(url, P1) ──►                                  ├──► worker 2 (P1, instant)
-                    │   items ordered by (priority,seq)├──► worker 3 (idle)
-                    │                                  ├──► worker 4 (idle)
-                    └──────────────────────────────────┘──► worker 5 (P5, 3s delay)
-```
-
-**Net effect:** real users never wait for background tasks; e-commerce servers are not hammered by low-priority scrapes; no IP ban risk from burst behaviour.
+Five async workers drain the queue concurrently. A P5 worker sleeping for 3 s does not block P1 items — the other four workers remain available.
 
 ---
 
@@ -841,7 +805,7 @@ Built with Next.js 15 App Router, TailwindCSS, and TypeScript.
 - **Typing indicator** — three bouncing dots while awaiting API
 - **Image upload** — attached photo compressed to WEBP client-side before base64 encoding
 - **"Not satisfied?" button** — appears below the last product set; prefills input with rejection context and passes `excluded_urls` to the next request so the pipeline skips those pages
-- **Price-enriched API messages** — assistant messages containing products are serialised as a price summary (`"Here are the top 3 products I found: 1. ASUS VivoBook — 1799 RON; ..."`) before being sent to the backend, enabling Gemini's Dynamic Budget Drop on refinement requests
+- **Price-enriched API messages** — assistant messages containing products are serialised as a price summary before being sent to the backend, enabling Gemini's Dynamic Budget Drop on refinement requests
 
 ### Product Cards
 
@@ -972,25 +936,32 @@ SmartShoppingAssistant/
 │   ├── core/config.py                 # Pydantic settings (reads from .env)
 │   ├── models/
 │   │   ├── search.py                  # ChatMessage, Product, ChatResponse
-│   │   └── user.py                    # Auth request/response models (OTPRequest:
-│   │                                  #   email, phone, city, state?, country)
+│   │   └── user.py                    # Auth request/response models
 │   ├── routers/
 │   │   ├── auth.py                    # WebAuthn, OTP, JWT
 │   │   └── search.py                  # /search/chat — SSE streaming pipeline:
-│   │                                  #   niche-first strategy, research agent,
-│   │                                  #   is_likely_product_url shape filter
+│   │                                  #   OpenAI router gate, cache check,
+│   │                                  #   niche-first Tavily strategy,
+│   │                                  #   Traffic Cop (Lane A/B split),
+│   │                                  #   multilingual status messages (9 langs),
+│   │                                  #   multilingual OOS detection (20+ langs),
+│   │                                  #   heuristic price-sort fallback
 │   ├── services/
+│   │   ├── openai_router.py           # gpt-4o-mini front-end intent router:
+│   │   │                              #   full intent classification + is_mainstream
+│   │   │                              #   detection; Gemini fallback on failure
 │   │   ├── gemini_service.py          # Intent classification, scoring, embeddings,
 │   │   │                              #   research_community_picks (Google Search
-│   │   │                              #   grounded), extract_dynamic_logistics,
+│   │   │                              #   grounded), read_heavy_url_with_grounding
+│   │   │                              #   (Lane B Gemini Grounding),
+│   │   │                              #   extract_dynamic_logistics,
 │   │   │                              #   Groq circuit breaker (Llama 3.3-70B scoring
 │   │   │                              #   / Llama 3.1-8B intent), compact prompt builder
 │   │   ├── tavily_service.py          # Product URL discovery
-│   │   ├── scraper_service.py         # Global Hybrid Pipeline waterfall:
-│   │   │                              #   CF Worker Swarm → direct curl_cffi
-│   │   │                              #   (lazy residential proxy escalation) →
-│   │   │                              #   ghost layer (Google Cache / Archive).
-│   │   │                              #   hostile_domains DB learner set.
+│   │   ├── scraper_service.py         # Direct curl_cffi (lazy residential proxy
+│   │   │                              #   escalation) → ghost layer (Google Cache /
+│   │   │                              #   Archive). hostile_domains DB learner set.
+│   │   │                              #   sort_urls_for_lanes() Traffic Cop.
 │   │   │                              #   is_likely_product_url() shape filter.
 │   │   │                              #   is_valid_product_page() soft-block detector.
 │   │   │                              #   6-profile TLS rotation, TLD locale headers,
@@ -999,6 +970,7 @@ SmartShoppingAssistant/
 │   │   │                              #   + priority queue scheduler.
 │   │   ├── retailers_service.py       # supported_retailers DB wrapper:
 │   │   │                              #   niche/mainstream domains per country,
+│   │   │                              #   is_niche_domain() for Traffic Cop,
 │   │   │                              #   proxy-required set, 5-min TTL cache
 │   │   ├── logistics_data.py          # Deterministic shipping registry for known
 │   │   │                              #   retailers (fees, thresholds, delivery windows)
@@ -1020,10 +992,7 @@ SmartShoppingAssistant/
 │       │   ├── test_jsonld_service.py # JSON-LD / microdata unit tests
 │       │   └── test_data_structures.py # BloomFilter, _LRUCache, ScraperScheduler
 │       └── live/
-│           ├── test_search_live.py    # Live API tests (Gemini, Tavily, scraper)
-│           ├── test_research_agent_live.py # research_community_picks live tests
-│           └── test_shopping_scenarios.py  # Full pipeline: bike, watch, backpack
-│                                           # (RUN_SHOPPING_SCENARIO_TESTS=1)
+│           └── test_search_live.py    # Live API tests (Gemini, Tavily, scraper)
 │
 ├── frontend/
 │   ├── app/
@@ -1057,8 +1026,8 @@ SmartShoppingAssistant/
 
 - Python 3.12+, Node.js 20+
 - Supabase project with the `vector` extension enabled
-- API keys: Gemini, Tavily
-- Optional: Groq API key (circuit breaker), IPRoyal residential proxy credentials, Cloudflare Worker URLs
+- API keys: Gemini, Tavily, OpenAI
+- Optional: Groq API key (circuit breaker), IPRoyal residential proxy credentials
 
 ### Backend
 
@@ -1098,17 +1067,17 @@ JWT_SECRET=...                  # random 32+ char string
 RP_ID=localhost                 # must match browser origin domain
 FRONTEND_ORIGIN=http://localhost:3000
 
+# ── OpenAI front-end router (recommended) ─────────────────────────────────
+# When set, gpt-4o-mini handles intent classification + mainstream detection.
+# Falls back to Gemini classify_intent if absent or on failure.
+OPENAI_API_KEY=...
+
 # ── Groq circuit breaker (optional) ───────────────────────────────────────
 # When set, activates Llama 3.3-70B as a fallback when Gemini returns 429.
 GROQ_API_KEY=...
 
-# ── Cloudflare Worker Swarm (optional) ────────────────────────────────────
-# Comma-separated URLs of deployed CF Workers used as Phase 1a proxies.
-CF_WORKER_URLS=https://smartshop-proxy-1.your-subdomain.workers.dev,...
-CF_WORKER_SECRET=...            # shared secret sent as X-Worker-Secret header
-
 # ── Residential proxy (optional) ─────────────────────────────────────────
-# When set, all curl_cffi sessions are routed through this proxy.
+# When set, all curl_cffi sessions are routed through this proxy on block.
 # Bypasses datacenter IP blocks on Amazon, Walmart, and similar retailers.
 PROXY_HOST=geo.iproyal.com
 PROXY_PORT=12321
@@ -1145,20 +1114,6 @@ python -m pytest tests/live/test_search_live.py -m live -v
 # ~28 tests: intent classification, embeddings, Tavily, scraper
 ```
 
-Research agent live tests:
-
-```bash
-python -m pytest tests/live/test_research_agent_live.py -v
-```
-
-Full shopping scenario pipeline (most expensive — hits Tavily + Gemini + scraper):
-
-```bash
-RUN_SHOPPING_SCENARIO_TESTS=1 python -m pytest tests/live/test_shopping_scenarios.py -v -s
-# 3 scenarios: sports bike <800 RON, digital watch <500 RON (gender refinement),
-#              black resistant backpack <100 RON (Romanian local sites)
-```
-
 ### Verbose pipeline test harness
 
 ```bash
@@ -1166,7 +1121,7 @@ cd backend
 python live_pipeline_test.py
 ```
 
-Runs 5 real end-to-end scenarios (gaming laptop 2500–3000 RON, mountain bike < 1000 RON, women's watch < 500 RON with gender refinement, Amazon wireless headset $80, notebook/laptop intent-gate) with detailed per-URL waterfall logs: which phase succeeded, chars extracted, JSON-LD facts, contender filter reasons, shape filter drop count, lazy proxy learner decisions (`[LEARNER]` lines), and final Gemini scores. No mocks — consumes real Tavily and Gemini credits.
+Runs 5 real end-to-end scenarios (gaming laptop 2500–3000 RON, mountain bike < 1000 RON, women's watch < 500 RON with gender refinement, Amazon wireless headset $80, notebook/laptop intent-gate) with detailed per-URL waterfall logs: which lane each URL went to, which phase succeeded, chars extracted, JSON-LD facts, contender filter reasons, shape filter drop count, lazy proxy learner decisions (`[LEARNER]` lines), and final Gemini scores. No mocks — consumes real Tavily, OpenAI, and Gemini credits.
 
 ### Frontend tests
 
@@ -1186,3 +1141,5 @@ npm test
 **Tests must not touch live services** — Unit and mock tests patch all external calls (Gemini, Tavily, Supabase, scraper). The full unit suite runs in under 2 seconds with no network I/O.
 
 **Retailer registry over hardcoded lists** — Domain lists (proxy-required, country domains, tiers) live in the `supported_retailers` Supabase table. `retailers_service.py` loads them with a 5-minute TTL. Adding a new retailer is a DB insert, not a code change.
+
+**Lane assignment is based on the `supported_retailers` table** — `sort_urls_for_lanes()` calls `retailers_service.is_niche_domain()` to decide whether a URL goes to the curl_cffi scraper (Lane A) or Gemini Grounding (Lane B). A domain flagged as `tier='mainstream'` always goes to Lane B, regardless of whether the URL looks like a product detail page.

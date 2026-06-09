@@ -847,7 +847,25 @@ async def _run_product_pipeline(
             before - len(ranked), len(ranked),
         )
 
-    if not ranked and contenders:
+    # ── OpenAI sanity check: verify ranked products match the requested category ──
+    # Guards against Gemini hallucinating the wrong product type (e.g. user asked
+    # for bikes but results are cars) or returning category-page titles as products.
+    # Only approved products survive; all-denied triggers the no-results path below.
+    _sanity_denied_all = False
+    if ranked:
+        ranked = await run_in_threadpool(
+            openai_router.sanity_check_products,
+            ranked,
+            params.category or "",
+            params.preference or None,
+        )
+        if not ranked:
+            logger.warning("[SANITY] all products denied — treating as no results")
+            _sanity_denied_all = True
+
+    # Skip heuristic fallback when the sanity check is what cleared the list —
+    # price-sorting the same wrong products would just re-surface them.
+    if not ranked and contenders and not _sanity_denied_all:
         logger.warning(
             "[P5/HEURISTIC] AI scorer returned nothing — price-sort fallback on %d contenders",
             len(contenders),

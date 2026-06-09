@@ -151,3 +151,77 @@ def _gemini_fallback(messages, city: str, country: str) -> dict:
     result = gemini_service.classify_intent(messages, city, country)
     result.setdefault("is_mainstream", False)
     return result
+
+
+def sanity_check_products(
+    ranked: list[dict],
+    user_category: str,
+    user_preference: str | None = None,
+) -> list[dict]:
+    """
+    OpenAI sanity check: verify each Gemini-ranked product actually matches
+    what the user asked for. Catches hallucinated categories (user asked for
+    bikes, Gemini returned cars) and product-category page titles returned as
+    if they were individual products.
+
+    Checks ONLY product type correctness — never scores, prices, or quality.
+    Fails open (returns all products unchanged) if OpenAI is unavailable.
+    Runs synchronously — call via run_in_threadpool from async handlers.
+    """
+    if not ranked or not _openai_client:
+        return ranked
+
+    query_desc = " ".join(filter(None, [user_preference, user_category])).strip() or user_category
+    products_payload = [
+        {"index": i + 1, "title": p.get("title") or p.get("url", "")}
+        for i, p in enumerate(ranked)
+    ]
+
+    prompt = (
+        f"A user searched for: \"{query_desc}\"\n\n"
+        f"An AI returned these products:\n"
+        f"{json.dumps(products_payload, ensure_ascii=False)}\n\n"
+        f"For each product, check ONLY whether it is the correct TYPE of product "
+        f"the user asked for.\n"
+        f"- \"approved\" = the title matches the expected product category "
+        f"(e.g. user asked for bikes → result is a bike)\n"
+        f"- \"denied\" = the title is clearly a different product type "
+        f"(e.g. user asked for bikes but result is a car, helmet, or accessory), "
+        f"OR the title looks like a product category page rather than a specific product\n\n"
+        f"Rules:\n"
+        f"- Do NOT consider price, quality, brand, or scores — only product type.\n"
+        f"- If you are unsure, approve it.\n"
+        f"- A specific model name from the right category is always approved.\n\n"
+        f"Return ONLY valid JSON, no explanation:\n"
+        f"{{\"verdicts\": [{{\"index\": 1, \"verdict\": \"approved\"}}]}}"
+    )
+
+    try:
+        resp = _openai_client.chat.completions.create(
+            model=_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"},
+            temperature=0.0,
+            max_tokens=256,
+        )
+        raw = resp.choices[0].message.content or ""
+        data = json.loads(raw)
+        verdicts: dict[int, str] = {
+            v["index"]: v.get("verdict", "approved")
+            for v in (data.get("verdicts") or [])
+            if isinstance(v, dict) and "index" in v
+        }
+        approved = [p for i, p in enumerate(ranked, 1) if verdicts.get(i, "approved") == "approved"]
+        denied_count = len(ranked) - len(approved)
+        if denied_count:
+            logger.warning(
+                "[SANITY] OpenAI denied %d/%d product(s) for query %r — titles: %s",
+                denied_count, len(ranked), query_desc,
+                [ranked[i - 1].get("title", "") for i, v in verdicts.items() if v == "denied"],
+            )
+        else:
+            logger.info("[SANITY] all %d product(s) approved for query %r", len(ranked), query_desc)
+        return approved
+    except Exception as exc:
+        logger.warning("[SANITY] OpenAI sanity check failed, returning all products: %s", exc)
+        return ranked
