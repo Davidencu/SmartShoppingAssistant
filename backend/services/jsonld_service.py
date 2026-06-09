@@ -242,6 +242,15 @@ def _extract_from_product(product: dict) -> dict:
                 rating_str += f" ({rc} reviews)"
             facts["rating"] = rating_str
 
+    # Product image — may be a URL string, an array, or an ImageObject
+    image = product.get("image")
+    if isinstance(image, list):
+        image = image[0] if image else None
+    if isinstance(image, dict):
+        image = image.get("url") or image.get("contentUrl")
+    if isinstance(image, str) and image.startswith("http"):
+        facts["image"] = image
+
     return facts
 
 
@@ -408,6 +417,12 @@ def extract_bs4_facts(html: str) -> dict:
         if raw:
             facts["seller"] = raw
 
+    # Product image from Open Graph (fallback when JSON-LD product.image is absent)
+    if "image" not in facts:
+        raw = _meta_content("og:image", "twitter:image:src", "twitter:image")
+        if raw and raw.startswith("http"):
+            facts["image"] = raw
+
     # 2. Schema.org itemprop (content= attribute takes priority over text)
 
     if "price" not in facts:
@@ -548,6 +563,8 @@ def build_facts_header(jsonld: dict) -> str:
         lines.append(f"CONFIRMED SHIPPING COST: {cost_str}")
     if "delivery_days" in jsonld:
         lines.append(f"CONFIRMED DELIVERY: {jsonld['delivery_days']} business days")
+    if "image" in jsonld:
+        lines.append(f"CONFIRMED IMAGE: {jsonld['image']}")
 
     if not lines:
         return ""

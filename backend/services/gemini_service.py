@@ -12,6 +12,7 @@ from pydantic import BaseModel
 
 from core.config import settings
 from services.jsonld_service import build_facts_header
+from services.logistics_data import get_logistics_context
 
 logger = logging.getLogger(__name__)
 
@@ -828,13 +829,23 @@ def score_and_rank_products(
         logistics_ctx = ""
         return_note = ""
         if not is_global:
-            policy_url = r.get("shipping_policy_url") or ""
-            if policy_url:
-                logistics = extract_dynamic_logistics(policy_url, country, city)
-                if logistics:
-                    logistics_ctx = _format_dynamic_logistics_ctx(
-                        _extract_domain_simple(r["url"]), city, country, logistics
-                    )
+            # Vendor registry: deterministic, zero network calls for known retailers.
+            # Preferred over dynamic extraction — runs first and wins if the domain matches.
+            vendor_ctx = get_logistics_context(
+                r["url"], city,
+                jsonld.get("price"), jsonld.get("currency"), budget_currency,
+            )
+            if vendor_ctx:
+                logistics_ctx = vendor_ctx
+            else:
+                # Fall back to dynamic policy-page extraction for unknown vendors.
+                policy_url = r.get("shipping_policy_url") or ""
+                if policy_url:
+                    logistics = extract_dynamic_logistics(policy_url, country, city)
+                    if logistics:
+                        logistics_ctx = _format_dynamic_logistics_ctx(
+                            _extract_domain_simple(r["url"]), city, country, logistics
+                        )
             return_text = (r.get("return_policy_text") or "")[:250]
             if return_text:
                 return_note = f"### RETURN POLICY\n{return_text}\n\n"
@@ -1170,6 +1181,16 @@ well below the budget ceiling — excellent value for the price.' Flag any missi
             + s["trust"]              * SCORE_WEIGHTS["trust"],
             1,
         )
+
+    # Inject image_url from extracted structured data when the LLM returned null.
+    # The compressed markdown rarely contains image URLs, so the LLM can't reliably
+    # find them — use the JSON-LD / og:image we already extracted during scraping.
+    url_to_jsonld = {r["url"]: (r.get("jsonld") or {}) for r in scraped_results}
+    for p in ranked:
+        if not p.get("image_url"):
+            jld = url_to_jsonld.get(p.get("url"), {})
+            if "image" in jld:
+                p["image_url"] = jld["image"]
 
     # Re-sort by the corrected score (LLM's order may have been based on wrong values)
     ranked.sort(key=lambda p: p["value_score"], reverse=True)

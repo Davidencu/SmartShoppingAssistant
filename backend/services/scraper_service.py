@@ -583,6 +583,7 @@ _CAT_PATH_RE = re.compile(
     r"manual|manuals|instruction|instructions|datasheet|datasheets|handbook|handbooks|"
     r"download|downloads|firmware|driver|drivers|software|"
     r"compare|comparison|versus|"
+    r"brands?|branduri[^/]*|toate[^/]*|"   # brand listings (/brands/, /branduri-sportive/) and Romanian all-categories breadcrumbs (/toate-sporturile/)
     r"c"                     # /c/category-name prefix (bb-shop.ro, etc.)
     r")(?:/|$|\?)",
     re.IGNORECASE
