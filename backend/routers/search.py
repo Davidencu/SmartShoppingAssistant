@@ -390,8 +390,8 @@ def _t(lang: str, key: str, **kwargs) -> str:
 _OUT_OF_STOCK_SIGNALS = frozenset({
     # English
     "outofstock", "out of stock", "out-of-stock",
-    "sold out", "unavailable", "currently unavailable", "no longer available",
-    "temporarily out of stock",
+    "sold out", "currently unavailable", "no longer available",
+    "temporarily out of stock", "no featured offers available",
     # Romanian
     "indisponibil", "stoc epuizat", "stoc 0",
     # French
@@ -550,6 +550,49 @@ def _build_search_query(
     return f"{base} buy", local_domains or None
 
 
+# Heuristic fallback ranking
+
+def _heuristic_rank(contenders: list[dict], budget_max: float | None) -> list[dict]:
+    """
+    Price-sort fallback for when all LLM scorers are unavailable.
+    Sorts by: in-budget first → lowest price → richest structured data.
+    Returns top 3 with zero scores and a note in reasoning.
+    """
+    def _price(c: dict) -> float | None:
+        try:
+            raw = (c.get("jsonld") or {}).get("price")
+            return float(str(raw).replace(",", ".")) if raw is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    def _sort_key(c: dict) -> tuple:
+        p = _price(c)
+        in_budget = budget_max is None or p is None or p <= budget_max
+        richness = len(c.get("markdown") or "")
+        jld = c.get("jsonld") or {}
+        if jld.get("name"):   richness += 1_000
+        if jld.get("rating"): richness += 500
+        return (0 if in_budget else 1, p if p is not None else 1e9, -richness)
+
+    top3 = sorted(contenders, key=_sort_key)[:3]
+    results = []
+    for i, c in enumerate(top3, 1):
+        jld = c.get("jsonld") or {}
+        p = _price(c)
+        results.append({
+            "rank": i,
+            "title": jld.get("name") or c.get("title") or "",
+            "url": c["url"],
+            "price": p,
+            "currency": jld.get("currency"),
+            "image_url": jld.get("image"),
+            "scores": {"cost_efficiency": 0, "quality_confidence": 0, "logistics": 0, "trust": 0},
+            "value_score": 0.0,
+            "reasoning": "AI scorer temporarily unavailable — ranked by price within budget.",
+        })
+    return results
+
+
 # Pipeline Helper
 
 async def _run_product_pipeline(
@@ -631,6 +674,7 @@ async def _run_product_pipeline(
                     tavily_results.append(r)
                     seen.add(r["url"])
 
+    n_initial = len(tavily_results)
     if excluded_urls:
         before_excl = len(tavily_results)
         tavily_results = [r for r in tavily_results if r["url"] not in excluded_urls]
@@ -666,7 +710,13 @@ async def _run_product_pipeline(
 
     # Drop category/listing/search URLs — only scrape product detail pages
     before_shape = len(tavily_results)
-    tavily_results = [r for r in tavily_results if is_likely_product_url(r["url"])]
+    kept_results = []
+    for r in tavily_results:
+        if is_likely_product_url(r["url"]):
+            kept_results.append(r)
+        else:
+            logger.info("[GATEKEEPER] dropped non-PDP: %s", r["url"])
+    tavily_results = kept_results
     dropped_cat = before_shape - len(tavily_results)
     if dropped_cat:
         logger.info("[P1/TAVILY] dropped %d category/listing URLs via shape filter", dropped_cat)
@@ -712,6 +762,16 @@ async def _run_product_pipeline(
         excluded_keywords=excluded_keywords,
         price_floor=price_floor,
     )
+
+    # ── Diagnostic counts ─────────────────────────────────────────────────────
+    _n_with_content = sum(1 for s in scraped if len(s.get("markdown") or "") > 400)
+    _n_fetch_fail   = len(scraped) - _n_with_content
+    _n_no_struct    = sum(
+        1 for s in scraped
+        if len(s.get("markdown") or "") > 400 and not (s.get("jsonld") or {})
+    )
+    _n_filter_fail  = _n_with_content - len(contenders)
+
     logger.info(
         "[P2/SCRAPER] %d/%d URLs passed contender filter",
         len(contenders), len(scraped),
@@ -722,7 +782,12 @@ async def _run_product_pipeline(
                     (c.get("jsonld") or {}).get("price", "?"))
 
     if not contenders:
-        logger.warning("[P2/SCRAPER] no contenders after filter — returning empty")
+        logger.warning(
+            "[P2/SCRAPER] no contenders after filter — returning empty\n"
+            "  [DIAG] candidates=%d  gatekeeper_rej=%d  fetch_fail=%d  "
+            "no_struct=%d  filter_fail=%d  contenders=0  final=0",
+            n_initial, n_initial - len(urls), _n_fetch_fail, _n_no_struct, _n_filter_fail,
+        )
         return []
 
     if on_event:
@@ -770,6 +835,32 @@ async def _run_product_pipeline(
             before - len(ranked), len(ranked),
         )
 
+    if not ranked and contenders:
+        logger.warning(
+            "[P3/HEURISTIC] AI scorer returned nothing — price-sort fallback on %d contenders",
+            len(contenders),
+        )
+        ranked = _heuristic_rank(contenders, params.budget_max)
+
+    logger.info(
+        "[DIAG]\n"
+        "  Candidates found (Tavily): %d\n"
+        "  Rejected by gatekeeper:   %d\n"
+        "  Sent to scraper:          %d\n"
+        "  Fetch failures:           %d\n"
+        "  No structured data:       %d\n"
+        "  Failed filters (OOS/budget/category): %d\n"
+        "  Contenders → Gemini:      %d\n"
+        "  Final recommendations:    %d",
+        n_initial,
+        n_initial - len(urls),
+        len(urls),
+        _n_fetch_fail,
+        _n_no_struct,
+        _n_filter_fail,
+        len(contenders),
+        len(ranked),
+    )
     return ranked
 
 

@@ -572,10 +572,12 @@ _CAT_PATH_RE = re.compile(
     r"/(?:"
     r"cat|category|categorie|kategorie|kategori|kategoria|"
     r"collections|catalog|catalogo|catalogue|katalog|catalogus|wholesale|"
-    r"search|cautare|recherche|suche|buscar|busqueda|ricerca|szukaj|zoeken|sok|sog|"
+    r"search|cauta|cautare|recherche|suche|buscar|busqueda|ricerca|szukaj|zoeken|sok|sog|"
     r"filter|filtru|filtre|filtro|filtr|szuro|"
     r"blog|news|about|terms|privacy|contact|help|faq|support|press|careers|"
-    r"account|login|logout|wishlist|sitemap"
+    r"account|login|logout|wishlist|sitemap|"
+    r"best-sellers?|stores|zgbs|live|"   # Amazon best-sellers grids, brand stores, live video
+    r"c"                     # /c/category-name prefix (bb-shop.ro, etc.)
     r")(?:/|$|\?)",
     re.IGNORECASE
 )
@@ -613,7 +615,7 @@ _SKU_RE = re.compile(
 # and Romanian retail sites that use /p/{numeric-id} (dedeman.ro, altex.ro style).
 _CMS_PRODUCT_PATH_RE = re.compile(
     r"(?:"
-    r"/(?:products?|items?|pd|pdp)/[^/\s?#]+"
+    r"/(?:products?|items?|pd|pdp|dp)/[^/\s?#]+"
     r"|/p/\d{4,}"
     r")(?:/|$|\?)",
     re.IGNORECASE,
@@ -629,7 +631,16 @@ def is_likely_product_url(url: str) -> bool:
         if depth == 0:
             return False
 
-        # RULE 1: Negative Filter evaluates FIRST (hard block).
+        # RULE 0: CMS product path prefix — evaluated before the negative filter.
+        # /products/slug, /product/slug, /pd/CODE, /pdp/CODE, /dp/ASIN, /p/{4+digits}.
+        # These are exclusive product-page signals in every major e-commerce CMS; no
+        # category URL uses them. Checking first lets sites like B&H (/c/product/ID/slug)
+        # pass even though their /c/ namespace would otherwise trip the negative filter.
+        if _CMS_PRODUCT_PATH_RE.search(url):
+            logger.info("[GATEKEEPER] Allowed via CMS product prefix: %s", url)
+            return True
+
+        # RULE 1: Negative Filter (hard block).
         # Category/filter/search URLs are rejected even when they contain
         # numeric IDs — e.g. eMAG /filter/...v-12746936/c would otherwise
         # be rescued by the SKU pattern below.
@@ -639,12 +650,6 @@ def is_likely_product_url(url: str) -> bool:
         # RULE 2: SKU Rescue — only for URLs that already passed the negative filter.
         if _SKU_RE.search(url):
             logger.info("[GATEKEEPER] Allowed via SKU match: %s", url)
-            return True
-
-        # RULE 2b: CMS product path prefix.
-        # Shopify /products/slug, WooCommerce /product/slug, eMAG /pd/CODE, etc.
-        if _CMS_PRODUCT_PATH_RE.search(url):
-            logger.info("[GATEKEEPER] Allowed via CMS product prefix: %s", url)
             return True
 
         # RULE 3: Depth analysis.
@@ -661,9 +666,15 @@ def is_likely_product_url(url: str) -> bool:
             return True
 
         # RULE 4: Niche keyword bypass (depth-1).
+        # Requires either 3+ hyphen-tokens (specificity: brand/model/descriptor) OR a
+        # digit (model number / version). This blocks generic noun-noun category roots
+        # like /notebook-laptop or /laptop-laptopuri (2 tokens, no digit) while keeping
+        # real product slugs like /laptop-gaming-ieftin (3 tokens) or /iphone-15 (digit).
         if depth == 1 and _PRODUCT_KEYWORDS.search(segments[0]):
-            logger.info("[GATEKEEPER] Allowed via Niche Keyword Pass: %s", url)
-            return True
+            kw_tokens = [t for t in re.split(r"[-_]", segments[0]) if len(t) >= 2]
+            if len(kw_tokens) >= 3 or any(ch.isdigit() for ch in segments[0]):
+                logger.info("[GATEKEEPER] Allowed via Niche Keyword Pass: %s", url)
+                return True
 
         # RULE 4b: Long descriptive depth-1 slug.
         # Catches niche boutique slugs like /vanilla-sunset-candle or /cana-pictata-manual
@@ -934,33 +945,36 @@ def _fetch_direct_sync(url: str, domain: str) -> dict:
             if resp.status_code == 200:
                 html = resp.text or ""
                 if is_cloudflare_challenge(html, 200):
-                    logger.warning("[SCRAPER] CF challenge (direct) for %s — escalating to proxy", url)
+                    logger.warning("[FETCH-FAIL] cloudflare_challenge (direct, HTTP 200) %s", url)
                     html = ""
                     escalate = True
                 elif not is_valid_product_page(html):
-                    logger.warning(
-                        "[SCRAPER] soft-block (direct) for %s (%d chars) — escalating to proxy",
-                        url, len(html),
-                    )
+                    logger.warning("[FETCH-FAIL] empty_html (direct, %d chars) %s", len(html), url)
                     html = ""
                     escalate = True
                 # else: valid page — no escalation needed
             elif resp.status_code in (429, 403, 503):
                 if is_cloudflare_challenge("", resp.status_code):
-                    logger.debug("[SCRAPER] CF challenge HTTP %d (direct) for %s — escalating to proxy",
-                                 resp.status_code, url)
+                    logger.warning("[FETCH-FAIL] cloudflare_challenge (direct, HTTP %d) %s", resp.status_code, url)
+                elif resp.status_code == 429:
+                    logger.warning("[FETCH-FAIL] 429_rate_limit (direct) %s", url)
+                elif resp.status_code == 403:
+                    logger.warning("[FETCH-FAIL] 403_forbidden (direct) %s", url)
                 else:
-                    logger.debug("[SCRAPER] HTTP %d (direct) for %s — escalating to proxy",
-                                 resp.status_code, url)
+                    logger.warning("[FETCH-FAIL] HTTP_%d (direct) %s", resp.status_code, url)
                 escalate = True
             else:
-                logger.warning("HTTP %d for %s", resp.status_code, url)
+                logger.warning("[FETCH-FAIL] HTTP_%d (direct) %s", resp.status_code, url)
                 # Non-retriable status (404, 410, …) — mark blocked, skip proxy
                 result = _parse_html(url, "")
                 result["_blocked"] = True
                 return result
         except Exception as exc:
-            logger.warning("Direct fetch failed for %s: %s", url, exc)
+            exc_str = str(exc).lower()
+            if "timeout" in exc_str or "timed out" in exc_str:
+                logger.warning("[FETCH-FAIL] timeout (direct) %s — %s", url, exc)
+            else:
+                logger.warning("[FETCH-FAIL] network_error (direct) %s — %s", url, exc)
             escalate = True
 
     # ── Attempt 2: residential proxy ───────────────────────────────────────
@@ -986,15 +1000,15 @@ def _fetch_direct_sync(url: str, domain: str) -> dict:
         country = _country_for_url(url)
         html = fetch_via_residential_proxy(url, country) or ""
         if not html:
-            logger.warning("HTTP non-200 (proxy) for %s", url)
+            logger.warning("[FETCH-FAIL] proxy_non_200 %s", url)
             blocked = True
         elif is_cloudflare_challenge(html, 200):
-            logger.warning("[WAF WALL] CF challenge via proxy for %s — dropping contender", url)
+            logger.warning("[FETCH-FAIL] cloudflare_challenge (proxy) %s", url)
             html = ""
             cf_challenge = True
             blocked = True
         elif not is_valid_product_page(html):
-            logger.warning("[SCRAPER] soft-block even via proxy for %s", url)
+            logger.warning("[FETCH-FAIL] empty_html (proxy, %d chars) %s", len(html), url)
             html = ""
             blocked = True
 

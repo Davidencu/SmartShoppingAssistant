@@ -45,8 +45,8 @@ SEP3 = "·" * 90
 _OUT_OF_STOCK_SIGNALS = frozenset({
     # English
     "outofstock", "out of stock", "out-of-stock",
-    "sold out", "unavailable", "currently unavailable", "no longer available",
-    "temporarily out of stock",
+    "sold out", "currently unavailable", "no longer available",
+    "temporarily out of stock", "no featured offers available",
     # Romanian
     "indisponibil", "stoc epuizat", "stoc 0",
     # French
