@@ -457,7 +457,8 @@ def _pick_contenders(
         avail = ((s.get("jsonld") or {}).get("availability") or "").lower()
         if avail and any(sig in avail for sig in _OUT_OF_STOCK_SIGNALS):
             return False
-        md_head = (s.get("markdown") or "")[:1500].lower()
+        # Scan more of the markdown — OOS banners often appear mid-page on niche sites.
+        md_head = (s.get("markdown") or "")[:2500].lower()
         return not any(sig in md_head for sig in _OUT_OF_STOCK_SIGNALS)
 
     def _in_budget(s: dict) -> bool:
@@ -505,9 +506,10 @@ def _pick_contenders(
     def _richness(s: dict) -> int:
         score = len(s.get("markdown") or "")
         jld = s.get("jsonld") or {}
-        if jld.get("price"):   score += 5_000
-        if jld.get("rating"):  score += 2_000
-        if jld.get("name"):    score += 1_000
+        if jld.get("price"):        score += 5_000
+        if jld.get("rating"):       score += 2_000
+        if jld.get("name"):         score += 1_000
+        if s.get("has_buy_button"): score += 8_000  # active buy button = highest signal
         return score
 
     candidates = [
@@ -1137,43 +1139,7 @@ async def chat(
                     no_global_supplement=True,
                 )
 
-            # 5b. Local mainstream when niche pass returns nothing.
-            # Only relevant for country-scoped searches; global searches skip
-            # straight to the global mainstream fallback below.
-            if not ranked and not search_globally:
-                if combined_niche:
-                    await emit({"type": "status",
-                                "message": _t(detected_language, "mainstream_try")})
-                ranked = await _run_product_pipeline(
-                    deterministic_query, collected_params, city, country, local_domains,
-                    excluded_urls or None, is_global=False,
-                    on_event=emit, user_language=detected_language,
-                    excluded_keywords=excluded_keywords or None,
-                    price_floor=price_floor,
-                    community_picks=community_picks or None,
-                    specific_models=specific_models,
-                )
-
-            # ── 6. Global mainstream fallback ────────────────────────────────
-            # Amazon, eBay, AliExpress, etc. — proxy-heavy, but last resort.
-            # Only global mainstream domains are used here; niche ones were
-            # already tried in 5a so there is no point re-querying them.
             fallback_message: str | None = None
-            if not ranked and (local_domains or search_globally):
-                logger.info("[SEARCH] niche+local scoring empty — retrying global mainstream")
-                await emit({"type": "status", "message": _t(detected_language, "global")})
-                global_mainstream = retailers_service.get_global_mainstream_domains() or None
-                ranked = await _run_product_pipeline(
-                    deterministic_query, collected_params, city, country, global_mainstream,
-                    excluded_urls or None, is_global=True,
-                    on_event=emit, user_language=detected_language,
-                    excluded_keywords=excluded_keywords or None,
-                    price_floor=price_floor,
-                    community_picks=community_picks or None,
-                    specific_models=specific_models,
-                )
-                if ranked:
-                    fallback_message = _t(detected_language, "fallback")
 
             # ── 7. No results path ───────────────────────────────────────────
             if not ranked:

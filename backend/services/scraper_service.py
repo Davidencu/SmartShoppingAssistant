@@ -16,6 +16,9 @@ High-throughput scraper service with three concurrency primitives:
                   Tiebreaker: monotonic sequence number keeps same-priority
                   requests FIFO and prevents asyncio from ever comparing
                   Future objects (which are not orderable).
+
+Fetch strategy: curl_cffi (Chrome fingerprint) → residential proxy fallback →
+Internet Archive ghost layer. No Cloudflare Worker Swarm.
 """
 import asyncio
 import hashlib
@@ -26,9 +29,9 @@ import random
 import re
 import threading
 import time
-import urllib.request
 import urllib.parse
 from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from enum import IntEnum
 from collections.abc import Awaitable, Callable
@@ -44,7 +47,12 @@ from services.jsonld_service import extract_bs4_facts, extract_jsonld_facts
 
 logger = logging.getLogger(__name__)
 
-_CONNECT_TIMEOUT = 10   # seconds to establish TCP + TLS (direct / CF Swarm)
+# Dedicated I/O thread pool for scraping — larger than the default executor
+# (min(32, cpu+4)=8 on 4-core machines) since all work is network I/O.
+# 20 threads ≈ peak Tavily result count; threads sleep on sockets, not CPU.
+_scrape_executor = ThreadPoolExecutor(max_workers=20, thread_name_prefix="scraper-io")
+
+_CONNECT_TIMEOUT = 10   # seconds to establish TCP + TLS
 _READ_TIMEOUT    = 25   # seconds to receive first byte after connect (direct)
 _TIMEOUT         = _CONNECT_TIMEOUT + _READ_TIMEOUT  # asyncio hard cap
 _GHOST_READ_TIMEOUT = 8  # Wayback Machine hangs indefinitely for never-archived URLs
@@ -126,15 +134,6 @@ def _proxy_required(domain: str) -> bool:
     is unavailable (cold start, network error)."""
     from services import retailers_service  # lazy to avoid circular import at module load
     return retailers_service.requires_proxy(domain) or domain in _proxy_required_domains
-
-# ── Cloudflare Worker Swarm ────────────────────────────────────────────────
-# Loaded once at startup from config.  Workers are round-robin rotated for
-# IP diversity (each Cloudflare PoP has a distinct outbound IP).
-
-_cf_worker_urls: list[str] = []
-_cf_worker_secret: str = ""
-_cf_worker_idx: int = 0
-_cf_worker_lock = threading.Lock()
 
 # ── Residential Proxy ─────────────────────────────────────────────────────
 # Optional IPRoyal (or compatible) residential proxy.  Used lazily:
@@ -228,6 +227,33 @@ def _db_cache_put_bg(url: str, result: dict) -> None:
     threading.Thread(target=_db_cache_put, args=(url, result), daemon=True).start()
 
 
+def _db_cache_get_batch(urls: list[str]) -> None:
+    """
+    Single Supabase query for all URLs — pre-warms the in-process LRU cache.
+    Called once in scrape_urls before the per-URL scheduler submit loop,
+    turning N sequential DB round-trips into 1 batch round-trip.
+    """
+    if not urls:
+        return
+    try:
+        from services.supabase_service import get_supabase_admin
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=_DB_CACHE_TTL_HOURS)).isoformat()
+        res = (
+            get_supabase_admin()
+            .table("scrape_cache")
+            .select("url, markdown, jsonld, shipping_policy_url, return_policy_text")
+            .in_("url", urls)
+            .gte("scraped_at", cutoff)
+            .execute()
+        )
+        for row in res.data or []:
+            _url_cache.put(row["url"], row)
+            _scraped_bloom.add(row["url"])
+        logger.debug("[DB-CACHE-BATCH] pre-warmed %d/%d URLs", len(res.data or []), len(urls))
+    except Exception as exc:
+        logger.debug("[DB-CACHE-BATCH] batch get error: %s", exc)
+
+
 # ── Hostile-domain persistence ────────────────────────────────────────────────
 
 def _flag_domain_hostile(domain: str) -> None:
@@ -266,21 +292,11 @@ def _load_hostile_domains() -> None:
         logger.debug("[PROXY] retailers_service preload failed (first deploy?): %s", exc)
 
 
-def _init_cf_workers() -> None:
-    """Load Worker URLs + secret + residential proxy from settings."""
-    global _cf_worker_urls, _cf_worker_secret, _proxy_url
-    global _proxy_host, _proxy_port, _proxy_username, _proxy_password
+def _init_proxy() -> None:
+    """Load residential proxy settings and seed hostile-domain learner."""
+    global _proxy_url, _proxy_host, _proxy_port, _proxy_username, _proxy_password
     try:
-        from core.config import settings  # local import avoids circular deps at module load
-        raw = (settings.cf_worker_urls or "").strip()
-        _cf_worker_urls = [u.strip() for u in raw.split(",") if u.strip()]
-        _cf_worker_secret = (settings.cf_worker_secret or "").strip()
-        if _cf_worker_urls:
-            logger.info("[CF-SWARM] %d worker(s) configured", len(_cf_worker_urls))
-        else:
-            logger.debug("[CF-SWARM] no workers configured — hard domains use direct curl_cffi")
-
-        # Residential proxy setup
+        from core.config import settings
         host = (settings.proxy_host or "").strip()
         port = (settings.proxy_port or "").strip()
         user = (settings.proxy_username or "").strip()
@@ -292,22 +308,9 @@ def _init_cf_workers() -> None:
         else:
             logger.debug("[PROXY] no residential proxy configured")
     except Exception as exc:
-        logger.warning("[CF-SWARM] could not load worker config: %s", exc)
+        logger.warning("[PROXY] could not load proxy config: %s", exc)
 
-    # Seed the in-memory hostile-domain learner from Supabase (best-effort).
     _load_hostile_domains()
-
-
-
-def _next_worker() -> str | None:
-    """Thread-safe round-robin selection across configured workers."""
-    global _cf_worker_idx
-    if not _cf_worker_urls:
-        return None
-    with _cf_worker_lock:
-        url = _cf_worker_urls[_cf_worker_idx % len(_cf_worker_urls)]
-        _cf_worker_idx += 1
-    return url
 
 
 # Accept-Language matched to the site's TLD so regional firewalls
@@ -577,9 +580,22 @@ _CAT_PATH_RE = re.compile(
     r"blog|news|about|terms|privacy|contact|help|faq|support|press|careers|"
     r"account|login|logout|wishlist|sitemap|"
     r"best-sellers?|stores|zgbs|live|"   # Amazon best-sellers grids, brand stores, live video
+    r"manual|manuals|instruction|instructions|datasheet|datasheets|handbook|handbooks|"
+    r"download|downloads|firmware|driver|drivers|software|"
+    r"compare|comparison|versus|"
     r"c"                     # /c/category-name prefix (bb-shop.ro, etc.)
     r")(?:/|$|\?)",
     re.IGNORECASE
+)
+
+# File extensions that signal a non-HTML document (PDF manual, firmware zip, image, etc.)
+_JUNK_EXTENSIONS_RE = re.compile(
+    r"\.(?:pdf|doc|docx|xls|xlsx|ppt|pptx|csv|zip|rar|7z|tar|gz|"
+    r"xml|txt|rtf|odt|ods|odp|"
+    r"jpg|jpeg|png|gif|webp|svg|ico|bmp|tiff|"
+    r"mp4|mp3|avi|mov|wmv|flv|mkv|webm|"
+    r"exe|msi|apk|dmg|iso)(?:[?#]|$)",
+    re.IGNORECASE,
 )
 
 _PRODUCT_KEYWORDS = re.compile(
@@ -621,14 +637,69 @@ _CMS_PRODUCT_PATH_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Active buy-action button text in multiple languages.
+# Matched only against non-disabled elements so greyed-out "Add to Cart" doesn't count.
+_BUY_BUTTON_TEXT_RE = re.compile(
+    r"(?:"
+    # English
+    r"add\s+to\s+(?:cart|bag|basket|trolley)|buy\s+now|order\s+now|buy\s+it\s+now|"
+    r"add\s+to\s+bag|shop\s+now|purchase|place\s+order|checkout\s+now|"
+    # Romanian
+    r"adaug[aă]\s*(?:în\s*)?co[șs]|cump[aă]r[aă]\s*acum|în\s*co[șs]|"
+    # German
+    r"in\s+den\s+warenkorb|jetzt\s+kaufen|"
+    # French
+    r"ajouter\s+au\s+panier|acheter\s+maintenant|"
+    # Spanish / Portuguese
+    r"a[ñn]adir\s+al\s+carrito|comprar\s+ahora|adicionar\s+ao\s+carrinho|comprar\s+agora|"
+    # Italian
+    r"aggiungi\s+al\s+carrello|acquista\s+ora|"
+    # Polish
+    r"dodaj\s+do\s+koszyka|kup\s+teraz|"
+    # Dutch
+    r"toevoegen\s+aan\s+winkelwagen|koop\s+nu"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _has_active_buy_button(html: str) -> bool:
+    """Return True if the page has at least one non-disabled buy-action element."""
+    if not html:
+        return False
+    try:
+        soup = BeautifulSoup(html, "lxml")
+        for tag in soup.find_all(["button", "input", "a", "div", "span"]):
+            if tag.has_attr("disabled"):
+                continue
+            if "disabled" in tag.get("class", []):
+                continue
+            if tag.get("aria-disabled", "").lower() == "true":
+                continue
+            if _BUY_BUTTON_TEXT_RE.search(tag.get_text(" ", strip=True)):
+                return True
+        return False
+    except Exception:
+        return False
+
 
 def is_likely_product_url(url: str) -> bool:
     try:
-        path = urlparse(url).path.strip("/")
+        parsed = urlparse(url)
+        host = parsed.hostname or ""
+        path = parsed.path.strip("/")
         segments = [s for s in path.split("/") if s]
         depth = len(segments)
 
         if depth == 0:
+            return False
+
+        # Block app-store and platform-download hosts — no buyable products.
+        if any(host == junk or host.endswith("." + junk) for junk in _JUNK_HOSTS):
+            return False
+
+        # Block non-HTML documents (PDFs, firmware zips, images, etc.).
+        if _JUNK_EXTENSIONS_RE.search(path):
             return False
 
         # RULE 0: CMS product path prefix — evaluated before the negative filter.
@@ -784,6 +855,35 @@ def _extract_next_data_logistics(html: str) -> dict:
     return facts
 
 
+def _fetch_policy_bg(domain: str, html: str, base_url: str) -> None:
+    """
+    Fetch return/shipping policy pages in a daemon thread so _parse_html returns
+    immediately without waiting for a second HTTP round-trip.
+    Updates _policy_cache[domain] in-place once the fetch completes.
+    """
+    shipping_url, return_url = _find_policy_links(html, base_url)
+    return_text: str | None = None
+    if return_url:
+        try:
+            _pol_proxies = _proxies() if _proxy_required(domain) else None
+            with Session(impersonate=_profile_for_domain(domain)) as rs:
+                rr = rs.get(
+                    return_url,
+                    timeout=10,
+                    headers=_headers_for_url(return_url),
+                    proxies=_pol_proxies,
+                )
+                if rr.status_code == 200:
+                    return_text = _extract_text_bs4(rr.text) or None
+        except Exception as exc:
+            logger.debug("[SCRAPER] return policy fetch failed for %s: %s", return_url, exc)
+    _policy_cache[domain] = {"shipping_url": shipping_url, "return_text": return_text}
+    if shipping_url:
+        logger.info("[SCRAPER] shipping policy URL found for %s: %s", domain, shipping_url)
+    if return_text:
+        logger.info("[SCRAPER] return policy fetched for %s (%d chars)", domain, len(return_text))
+
+
 # Scraper core (synchronous, runs in thread pool)
 
 def _parse_html(url: str, html: str) -> dict:
@@ -794,7 +894,7 @@ def _parse_html(url: str, html: str) -> dict:
     Policy pages are fetched once per domain and cached in _policy_cache.
     """
     if not html:
-        return {"url": url, "markdown": "", "jsonld": {}, "shipping_policy_url": None, "return_policy_text": None}
+        return {"url": url, "markdown": "", "jsonld": {}, "has_buy_button": False, "shipping_policy_url": None, "return_policy_text": None}
 
     # JSON-LD fills gaps from BS4, but visual OOS signals win over stale JSON-LD cache.
     # Mid-market sites cache HTML (including JSON-LD) for hours; the dynamic frontend
@@ -813,38 +913,27 @@ def _parse_html(url: str, html: str) -> dict:
 
     # BS4 text extraction
     markdown = _extract_text_bs4(html)
+    has_buy_button = _has_active_buy_button(html)
 
-    # Two-hop: find shipping + return policy pages once per domain
+    # Two-hop: find shipping + return policy pages once per domain.
+    # Policy fetch runs in a daemon thread so _parse_html returns immediately
+    # without blocking on a second HTTP request. The first product from a new
+    # domain returns None for policy fields; subsequent ones hit the cache.
     domain = _extract_domain(url)
     if domain not in _policy_cache:
-        shipping_url, return_url = _find_policy_links(html, url)
-        return_text: str | None = None
-        if return_url:
-            try:
-                # Use proxy only if this domain is known-hostile (same rule as _fetch_direct_sync).
-                _pol_proxies = _proxies() if _proxy_required(domain) else None
-                with Session(impersonate=_profile_for_domain(domain)) as rs:
-                    rr = rs.get(
-                        return_url,
-                        timeout=10,
-                        headers=_headers_for_url(return_url),
-                        proxies=_pol_proxies,
-                    )
-                    if rr.status_code == 200:
-                        return_text = _extract_text_bs4(rr.text) or None
-            except Exception as exc:
-                logger.debug("[SCRAPER] return policy fetch failed for %s: %s", return_url, exc)
-        _policy_cache[domain] = {"shipping_url": shipping_url, "return_text": return_text}
-        if shipping_url:
-            logger.info("[SCRAPER] shipping policy URL found for %s: %s", domain, shipping_url)
-        if return_text:
-            logger.info("[SCRAPER] return policy fetched for %s (%d chars)", domain, len(return_text))
+        _policy_cache[domain] = {"shipping_url": None, "return_text": None}  # placeholder
+        threading.Thread(
+            target=_fetch_policy_bg,
+            args=(domain, html, url),
+            daemon=True,
+        ).start()
 
     cached = _policy_cache.get(domain, {})
     return {
         "url": url,
         "markdown": markdown,
         "jsonld": jsonld,
+        "has_buy_button": has_buy_button,
         "shipping_policy_url": cached.get("shipping_url"),
         "return_policy_text": cached.get("return_text"),
     }
@@ -891,7 +980,7 @@ def fetch_via_residential_proxy(target_url: str, target_country: str) -> str | N
         session_id = random.randint(100_000, 999_999)
         proxy_user = f"{_proxy_username}_country-{target_country}_session-{session_id}_lifetime-10m"
         safe_password = quote(_proxy_password, safe='')
-        dyn_url = f"http://{proxy_user}:{safe_password}@{_proxy_host}:{_proxy_port}"
+        dyn_url = f"http://{proxy_user}:{safe_password}@{_proxy_host}:12000"
         proxies = {"http": dyn_url, "https": dyn_url}
 
     try:
@@ -988,12 +1077,13 @@ def _fetch_direct_sync(url: str, domain: str) -> dict:
             return result
 
         if not proxy_required:
-            # First failure — persist to Supabase + in-memory learner.
+            # First failure — flag domain and add a short delay between the
+            # failed direct attempt and the proxy attempt to avoid WAF pattern.
             _flag_domain_hostile(domain)
-
-        delay = random.uniform(1.5, 3.0)
-        logger.debug("[SCRAPER] proxy escalation for %s (%.1fs delay)", url, delay)
-        time.sleep(delay)
+            delay = random.uniform(0.5, 1.5)
+            logger.debug("[SCRAPER] proxy escalation (first failure) for %s (%.1fs delay)", url, delay)
+            time.sleep(delay)
+        # Pre-known hostile: no direct attempt was made, so no delay needed.
 
         # chrome120 bypasses DataDome (Decathlon, SportsDirect, etc.); country-matched
         # session ID routes through a residential IP in the target market.
@@ -1022,60 +1112,6 @@ def _fetch_direct_sync(url: str, domain: str) -> dict:
     return result
 
 
-def _fetch_via_workers_sync(url: str, domain: str) -> dict:
-    """
-    Route the request through the Cloudflare Worker Swarm instead of fetching
-    directly from this server.  Workers run on Cloudflare edge PoPs — their
-    outbound IPs are not in cloud/datacenter ranges that Amazon/Walmart block.
-
-    Tries each worker in round-robin order; falls back to _fetch_direct_sync
-    if all workers fail (network error, worker down, non-200 worker response).
-    """
-    headers_for_target = _headers_for_url(url)
-    payload = _json.dumps({"url": url, "headers": headers_for_target}).encode()
-
-    tried: set[str] = set()
-    for _ in range(len(_cf_worker_urls)):
-        worker_url = _next_worker()
-        if worker_url is None or worker_url in tried:
-            break
-        tried.add(worker_url)
-        try:
-            req = urllib.request.Request(
-                worker_url,
-                data=payload,
-                headers={
-                    "Content-Type": "application/json",
-                    "X-Worker-Secret": _cf_worker_secret,
-                },
-                method="POST",
-            )
-            with urllib.request.urlopen(req, timeout=8) as resp:
-                body = _json.loads(resp.read().decode())
-
-            if body.get("status") == 200 and body.get("html"):
-                final_url = body.get("final_url") or url
-                html_body = body["html"]
-                if not is_valid_product_page(html_body):
-                    logger.warning(
-                        "[CF-SWARM] soft-block via worker %s for %s (%d chars) — trying next",
-                        worker_url, url, len(html_body),
-                    )
-                    continue  # try next worker; ghost layer catches total failure
-                logger.debug("[CF-SWARM] hit via %s → status 200 (%d chars)", worker_url, len(html_body))
-                return _parse_html(final_url, html_body)
-
-            logger.debug("[CF-SWARM] worker %s returned status=%s for %s",
-                         worker_url, body.get("status"), url)
-        except Exception as exc:
-            logger.warning("[CF-SWARM] worker %s error for %s: %s", worker_url, url, exc)
-
-    # All workers failed — hard domains block direct datacenter IPs too, so
-    # skip the direct curl_cffi attempt and signal the waterfall to escalate.
-    logger.warning("[CF-SWARM] all workers failed for %s — marking blocked", url)
-    result = _parse_html(url, "")
-    result["_blocked"] = True
-    return result
 
 
 
@@ -1111,68 +1147,34 @@ def _fetch_ghost_layer_sync(url: str) -> dict:
 
 def _fetch_one_sync(url: str) -> dict:
     """
-    5-step cost-ordered waterfall.
+    3-step cost-ordered waterfall.
 
-    Step 1 — DB Cache (Supabase, 24 h TTL): $0. Returns instantly, zero retailer
-             network traffic.
-    Step 2 — Reputation Engine: known-hostile domains (emag.ro, amazon.*, etc.)
-             skip Steps 3 and go directly to Step 4 (encoded in _HARD_DOMAINS /
-             _proxy_required_domains and handled inside _fetch_direct_sync).
-    Step 3 — Free Swarm (CF Workers / direct curl_cffi): $0. If 200 → parse, save,
-             return.  If 403 → flag domain hostile (persisted) and fall to Step 4.
-    Step 4 — Residential Proxy (~$0.0003/req): used exclusively for confirmed-hostile
-             domains and those just flagged by Step 3.
-    Step 5 — Ghost Layer (Google → Bing → Internet Archive): $0. Last resort;
-             extracts JSON-LD from archival snapshots when the live page is blocked.
+    Step 1 — DB Cache (Supabase, 24 h TTL): free, zero retailer traffic.
+    Step 2 — curl_cffi direct (Chrome fingerprint) with lazy residential proxy
+             escalation for hostile domains.
+    Step 3 — Ghost Layer (Internet Archive): free last resort; extracts JSON-LD
+             from archival snapshots when the live page is fully blocked.
     """
     domain = _extract_domain(url)
 
-    # ── Step 1: DB cache ────────────────────────────────────────────────────
+    # ── Step 1: DB cache ─────────────────────────────────────────────────────
     cached = _db_cache_get(url)
     if cached:
         logger.info("[WATERFALL] Cache Hit - returning data for: %s", url)
         return cached
 
-    # ── Steps 3 + 4: live network fetch ─────────────────────────────────────
-    # Step 2 (reputation) is explicit here: proxy-required domains are routed
-    # DIRECTLY to the residential proxy — the CF Swarm is never called for them.
-    # Sending a proxy-required domain through the Swarm first pre-flags the WAF
-    # before the proxy runs, causing both attempts to fail.
-    result: dict
-    proxy_required = _proxy_required(domain)
-
-    if proxy_required:
-        # Known-hostile domain → straight to residential proxy, skip CF Swarm entirely.
-        logger.info("[WATERFALL] proxy-required → residential proxy %s", url)
-        result = _fetch_direct_sync(url, domain)
-        if not result.get("_blocked"):
-            _db_cache_put_bg(url, result)
-            return result
-    elif _cf_worker_urls:
-        # Non-hostile domain → try CF Swarm (free) first, fall back to direct curl_cffi.
-        logger.debug("[WATERFALL] CF swarm → %s", url)
-        result = _fetch_via_workers_sync(url, domain)
-        if not result.get("_blocked"):
-            _db_cache_put_bg(url, result)
-            return result
-        logger.debug("[WATERFALL] workers blocked → direct curl_cffi %s", url)
-        result = _fetch_direct_sync(url, domain)
-        if not result.get("_blocked"):
-            _db_cache_put_bg(url, result)
-            return result
-    else:
-        # No CF workers configured: direct curl_cffi → residential proxy waterfall.
-        logger.debug("[WATERFALL] direct curl_cffi → %s", url)
-        result = _fetch_direct_sync(url, domain)
-        if not result.get("_blocked"):
-            _db_cache_put_bg(url, result)
-            return result
-
-    # ── Step 5: Ghost Layer ──────────────────────────────────────────────────
-    if result.get("_cf_challenge"):
-        logger.info("[WATERFALL] CF challenge on live site — skipping ghost layer for %s", url)
+    # ── Step 2: curl_cffi (direct → proxy escalation handled inside) ─────────
+    logger.debug("[WATERFALL] curl_cffi → %s", url)
+    result = _fetch_direct_sync(url, domain)
+    if not result.get("_blocked"):
+        _db_cache_put_bg(url, result)
         return result
-    logger.info("[WATERFALL] Steps 3+4 blocked — ghost layer → %s", url)
+
+    # ── Step 3: Ghost Layer ───────────────────────────────────────────────────
+    if result.get("_cf_challenge"):
+        logger.info("[WATERFALL] CF challenge — skipping ghost layer for %s", url)
+        return result
+    logger.info("[WATERFALL] live fetch blocked — ghost layer → %s", url)
     result = _fetch_ghost_layer_sync(url)
     if result.get("markdown"):
         _db_cache_put_bg(url, result)
@@ -1236,7 +1238,7 @@ class ScraperScheduler:
                     await asyncio.sleep(delay)
 
                 result = await asyncio.wait_for(
-                    loop.run_in_executor(None, _fetch_one_sync, url),
+                    loop.run_in_executor(_scrape_executor, _fetch_one_sync, url),
                     timeout=_TIMEOUT + 5,
                 )
 
@@ -1287,11 +1289,12 @@ class ScraperScheduler:
         return self._queue.qsize()
 
 
-# Module-level scheduler — workers start lazily on first request
-_scheduler = ScraperScheduler(num_workers=5)
+# Module-level scheduler — workers start lazily on first request.
+# 12 workers matches peak Tavily URL count (20 urls ÷ 12 ≈ 2 batches vs 4 with 5 workers).
+_scheduler = ScraperScheduler(num_workers=12)
 
-# Load Cloudflare Worker config at import time (no-op if vars are empty)
-_init_cf_workers()
+# Load proxy config + hostile-domain list at import time (no-op if vars are empty)
+_init_proxy()
 
 
 def clear_memory_cache() -> dict:
@@ -1331,11 +1334,25 @@ async def scrape_urls(
     if not urls:
         return []
 
-    futures = []
+    # Gatekeeper pass first so the batch DB query only covers real PDPs.
+    filtered_urls: list[str] = []
     for url in urls:
         if not is_likely_product_url(url):
             logger.info("[GATEKEEPER] dropping junk URL before scrape: %s", url)
-            continue
+        else:
+            filtered_urls.append(url)
+
+    if not filtered_urls:
+        return []
+
+    # Batch pre-warm: one Supabase query for all URLs instead of N sequential
+    # queries inside the scheduler workers (one per URL).  Cache hits resolve
+    # instantly via the LRU fast path; misses proceed to live network fetch.
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(_scrape_executor, _db_cache_get_batch, filtered_urls)
+
+    futures = []
+    for url in filtered_urls:
         futures.append(await _scheduler.submit(url, priority))
     total = len(futures)
 
