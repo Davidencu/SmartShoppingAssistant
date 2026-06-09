@@ -477,11 +477,13 @@ def _pick_contenders(
         if s.get("has_buy_button"): score += 8_000  # active buy button = highest signal
         return score
 
+    from services.scraper_service import is_likely_product_url
     candidates = [
         s for s in scraped
         if (
+            is_likely_product_url(s.get("url", ""))
             # Lane B results are pre-validated by Gemini; skip markdown length check
-            (s.get("_lane") == "B" or len(s.get("markdown") or "") > 400)
+            and (s.get("_lane") == "B" or len(s.get("markdown") or "") > 400)
             and _available(s)
             and _in_budget(s)
             and _above_floor(s)
@@ -491,7 +493,7 @@ def _pick_contenders(
     dropped = len(scraped) - len(candidates)
     if dropped:
         logger.info(
-            "[CONTENDER] dropped %d/%d pages (wrong category or below price floor)",
+            "[CONTENDER] dropped %d/%d pages (category URL, wrong category, or below price floor)",
             dropped, len(scraped),
         )
     candidates.sort(key=_richness, reverse=True)
@@ -745,12 +747,12 @@ async def _run_product_pipeline(
                 grounding_added += 1
 
             # ── Tavily baseline: use the snippet Tavily already returned ────
-            # Adds the search/category URL itself with Tavily's content as
-            # markdown. For product-detail URLs this gives Gemini richer data
-            # than the synthetic grounding record. For category URLs it acts as
-            # a fallback when grounding found nothing.
+            # Only add the original URL if it is a product-detail page.
+            # Category/search/listing URLs must not appear as final results —
+            # if grounding found nothing from them, we simply skip.
+            from services.scraper_service import is_likely_product_url
             tavily_snippet = url_to_content.get(url, "").strip()
-            if tavily_snippet and url not in seen_urls:
+            if tavily_snippet and url not in seen_urls and is_likely_product_url(url):
                 seen_urls.add(url)
                 lane_b_records.append({
                     "url": url,

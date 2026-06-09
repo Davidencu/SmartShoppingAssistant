@@ -1344,12 +1344,16 @@ def read_heavy_url_with_grounding(
                 products = json.loads(m.group())
                 if not isinstance(products, list):
                     continue
+                from services.scraper_service import is_likely_product_url
                 valid: list[dict] = []
                 for p in products:
                     if not isinstance(p, dict):
                         continue
                     url_val = str(p.get("url") or "")
                     if not url_val.startswith("http"):
+                        continue
+                    if not is_likely_product_url(url_val):
+                        logger.info("[LANE-B] grounding returned category URL, skipping: %s", url_val)
                         continue
                     valid.append({
                         "name": str(p.get("name") or "Unknown")[:200],
