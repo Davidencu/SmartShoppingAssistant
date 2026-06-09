@@ -21,7 +21,7 @@ _client = genai.Client(api_key=settings.gemini_api_key)
 _FLASH = "gemini-2.5-flash"
 _EMBED = "gemini-embedding-001"
 
-_BACKOFF_ATTEMPTS = 3
+_BACKOFF_ATTEMPTS = 5
 
 # ── Groq circuit breaker ───────────────────────────────────────────────────
 # Activated when Gemini returns 429 / ServerError after all retries.
@@ -857,18 +857,28 @@ If you cannot determine the exchange rate at all, assign cost_efficiency=40 and 
             f"Each product may include a '### VENDOR LOGISTICS CONTEXT' block above its page text.\n"
             f"When that block is present, its '→ LOGISTICS SCORE GUIDANCE' line gives you the\n"
             f"correct score band — use it directly. Do NOT override it with page-text guesses.\n"
-            f"When no context block is present, fall back to:\n"
+            f"When no context block is present, FIRST apply your knowledge of the retailer's\n"
+            f"typical delivery speed for {location_str} before falling back to the rubric below.\n"
+            f"Examples of retailer knowledge you should use:\n"
+            f"  - Amazon Prime (any country): 1–2 day delivery → score 90–100 if in stock\n"
+            f"  - eMag.ro, Altex.ro, Flanco.ro in Romania: next-day or same-day → score 90\n"
+            f"  - MediaMarkt, Saturn (DE/AT/CH/RO): 1–3 days → score 80\n"
+            f"  - Zalando, ASOS, H&M (EU): 3–5 days standard → score 70\n"
+            f"  - Walmart.com (US), Target.com (US): 2–5 days standard → score 70\n"
+            f"  - AliExpress (global): 10–30 days → score 40\n"
+            f"Only fall back to the rubric below if the retailer is completely unknown to you:\n"
             f"  100 — In stock + same-day or next-day delivery confirmed on page\n"
             f"   70 — In stock + standard 2–5 day delivery confirmed on page\n"
-            f"   40 — Delivery time unverified for {location_str}, stock status unclear\n"
+            f"   40 — Delivery time unverified and retailer unknown for {location_str}\n"
             f"    0 — Confirmed out of stock or discontinued"
         )
         unverified_shipping_note = (
             f"5. If a VENDOR LOGISTICS CONTEXT block is present for a product, follow its "
             f"'→ LOGISTICS SCORE GUIDANCE' line. "
-            f"If no context block is present and shipping to {location_str} is unverified, "
-            f"assign logistics score 40 and note \"Shipping time to {location_str} unverified\". "
-            f"Do NOT score 0."
+            f"If no context block is present, use your knowledge of the retailer's typical "
+            f"delivery for {location_str} to assign the correct score. "
+            f"Only use score 40 if the retailer is completely unknown to you. "
+            f"Do NOT score 0 for missing logistics data."
         )
 
     # Build optional community picks block — injected when research found consensus
@@ -1036,14 +1046,9 @@ well below the budget ceiling — excellent value for the price.' Flag any missi
   ]
 }}"""
 
-    # Compact prompt for Groq circuit breaker — fits within the 12k TPM free-tier limit.
-    # Omits full markdown, logistics context, and return policy text.
-    groq_prompt = _build_compact_scoring_prompt(
-        scraped_results, search_description, budget_max, budget_currency, picks
-    )
     logger.info(
-        "[SCORING] sending %d products to Gemini (~%d tokens) / Groq fallback (~%d tokens)",
-        len(scraped_results), len(prompt) // 4, len(groq_prompt) // 4,
+        "[SCORING] sending %d products to Gemini (~%d tokens)",
+        len(scraped_results), len(prompt) // 4,
     )
     ranked: list[dict] = []
     raw = ""
@@ -1063,20 +1068,14 @@ well below the budget ceiling — excellent value for the price.' Flag any missi
         ranked = json.loads(raw).get("ranked_products", [])
         logger.info("[SCORING] parsed %d ranked_products", len(ranked))
     except errors.ServerError as exc:
-        logger.warning("[SCORING] Gemini overloaded — routing to Groq circuit breaker: %s", exc)
-        ranked = _groq_score(groq_prompt)
-        if not ranked:
-            return []
+        logger.warning("[SCORING] Gemini overloaded: %s", exc)
+        raise RuntimeError("The AI is currently busy — please try again in a moment.") from exc
     except (json.JSONDecodeError, AttributeError, TypeError, ValueError) as exc:
-        logger.warning("[SCORING] Gemini JSON parse failed (%s) — routing to Groq: %.200s", exc, raw)
-        ranked = _groq_score(groq_prompt)
-        if not ranked:
-            return []
+        logger.warning("[SCORING] Gemini JSON parse failed (%s): %.200s", exc, raw)
+        return []
     except Exception as exc:
-        logger.warning("[SCORING] Gemini error — routing to Groq circuit breaker: %s", exc)
-        ranked = _groq_score(groq_prompt)
-        if not ranked:
-            return []
+        logger.warning("[SCORING] Gemini error: %s", exc)
+        raise
 
     # Reject hallucinated URLs. Only products whose URL came from Tavily (and is a real http URL)
     # are allowed through. This prevents example.com or invented URLs reaching the frontend.

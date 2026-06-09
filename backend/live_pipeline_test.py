@@ -33,6 +33,7 @@ logger = logging.getLogger("__main__")
 from services import gemini_service, scraper_service, tavily_service
 from services.jsonld_service import build_facts_header
 from services.scraper_service import is_likely_product_url
+from services.openai_router import classify_intent_and_route
 from models.search import ChatMessage as Message
 
 CITY    = "București"
@@ -200,9 +201,9 @@ async def run_pipeline(
 
     messages = [Message(role=m["role"], content=m["content"]) for m in user_messages]
 
-    # ── Intent ────────────────────────────────────────────────────────────────
+    # ── Intent (OpenAI router → Gemini fallback) ──────────────────────────────
     t0 = time.perf_counter()
-    intent_data = gemini_service.classify_intent(messages, city, country)
+    intent_data = classify_intent_and_route(messages, city, country)
     elapsed = time.perf_counter() - t0
 
     print(f"\n[INTENT]  ({elapsed:.2f}s)")
@@ -216,6 +217,7 @@ async def run_pipeline(
     print(f"  local_domains       : {intent_data.get('local_domains')}")
     print(f"  search_globally     : {intent_data.get('search_globally')}")
     print(f"  is_refinement       : {intent_data.get('is_refinement')}")
+    print(f"  is_mainstream       : {intent_data.get('is_mainstream')}")
 
     if intent_data.get("intent") in ("CHAT", "CLARIFY"):
         print("\n  → Pipeline halted at CLARIFY/CHAT intent.")
@@ -308,7 +310,7 @@ async def run_pipeline(
 
     # ── Phase 3: Gemini scoring ───────────────────────────────────────────────
     print(f"\n{SEP2}")
-    print("[PHASE 3] Gemini / Groq Scoring")
+    print("[PHASE 3] Gemini Scoring")
     print(SEP2)
     search_desc = (
         f"{cp.get('preference') or ''} {cp.get('category') or ''}"
@@ -329,7 +331,7 @@ async def run_pipeline(
     print(f"\n  Scored {len(ranked)} products in {elapsed:.2f}s\n")
 
     if not ranked:
-        print("  ✗ Scorer returned nothing — check Gemini/Groq logs above.")
+        print("  ✗ Scorer returned nothing — check Gemini logs above.")
         return
 
     for p in ranked:

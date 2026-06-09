@@ -645,6 +645,7 @@ async def _run_product_pipeline(
         return []
 
     url_to_title = {r["url"]: r.get("title", "") for r in tavily_results}
+    url_to_content = {r["url"]: r.get("content", "") for r in tavily_results}
     all_urls = [r["url"] for r in tavily_results]
 
     # ── Phase 3: Traffic Cop — split into Lane A (niche) and Lane B (heavy) ──
@@ -685,12 +686,15 @@ async def _run_product_pipeline(
             s["title"] = url_to_title.get(s["url"], "")
         return results
 
-    # ── Phase 4B: Lane B — Gemini Search Grounding (enterprise/category pages) ─
+    # ── Phase 4B: Lane B — Gemini Search Grounding + Tavily snippets ─────────
     async def _run_lane_b() -> list[dict]:
         if not heavy_urls:
             return []
         lane_b_records: list[dict] = []
+        seen_urls: set[str] = set()
+
         for url in heavy_urls[:6]:  # cap at 6 grounding calls per pipeline run
+            # ── Grounding: find specific in-stock products on this URL ──────
             products = await run_in_threadpool(
                 gemini_service.read_heavy_url_with_grounding,
                 url,
@@ -699,11 +703,15 @@ async def _run_product_pipeline(
                 params.category or "",
                 user_language,
             )
+            grounding_added = 0
             for p in products:
                 if not p.get("in_stock", True):
                     continue
                 if excluded_urls and p["url"] in excluded_urls:
                     continue
+                if p["url"] in seen_urls:
+                    continue
+                seen_urls.add(p["url"])
                 name = p.get("name", "Unknown")
                 price = p.get("price", 0)
                 currency = p.get("currency") or params.budget_currency or "RON"
@@ -730,6 +738,26 @@ async def _run_product_pipeline(
                         "image": p.get("image_url"),
                     },
                     "has_buy_button": True,
+                    "shipping_policy_url": None,
+                    "return_policy_text": None,
+                    "_lane": "B",
+                })
+                grounding_added += 1
+
+            # ── Tavily baseline: use the snippet Tavily already returned ────
+            # Adds the search/category URL itself with Tavily's content as
+            # markdown. For product-detail URLs this gives Gemini richer data
+            # than the synthetic grounding record. For category URLs it acts as
+            # a fallback when grounding found nothing.
+            tavily_snippet = url_to_content.get(url, "").strip()
+            if tavily_snippet and url not in seen_urls:
+                seen_urls.add(url)
+                lane_b_records.append({
+                    "url": url,
+                    "title": url_to_title.get(url, ""),
+                    "markdown": tavily_snippet,
+                    "jsonld": {},
+                    "has_buy_button": False,
                     "shipping_policy_url": None,
                     "return_policy_text": None,
                     "_lane": "B",
