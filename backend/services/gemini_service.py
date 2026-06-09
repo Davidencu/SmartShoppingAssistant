@@ -22,22 +22,23 @@ _EMBED = "gemini-embedding-001"
 
 _BACKOFF_ATTEMPTS = 3
 
-# ── Groq circuit breaker ───────────────────────────────────────────────────
+# ── OpenAI circuit breaker ─────────────────────────────────────────────────
 # Activated when Gemini returns 429 / ServerError after all retries.
-# Uses Llama-3.3-70B for scoring (quality match) and Llama-3.1-8B for intent
-# (speed). Falls back gracefully when GROQ_API_KEY is not set.
+# Uses gpt-4o for scoring (quality match) and gpt-4o-mini for intent (speed).
+# Falls back gracefully when OPENAI_API_KEY is not set.
 
-_groq_client = None
+_openai_client = None
 try:
-    if settings.groq_api_key:
-        from groq import Groq as _Groq
-        _groq_client = _Groq(api_key=settings.groq_api_key)
-        logger.info("[GROQ] circuit breaker configured (Llama 3.3-70B)")
-except Exception as _groq_init_exc:
-    logger.warning("[GROQ] init failed: %s", _groq_init_exc)
+    if settings.openai_api_key:
+        import openai as _openai_lib
+        _openai_client = _openai_lib.OpenAI(api_key=settings.openai_api_key)
+        logger.info("[OPENAI] circuit breaker configured (gpt-4o / gpt-4o-mini)")
+except Exception as _openai_init_exc:
+    logger.warning("[OPENAI] init failed: %s", _openai_init_exc)
 
-_GROQ_SCORE_MODEL = "llama-3.3-70b-versatile"
-_GROQ_INTENT_MODEL = "llama-3.1-8b-instant"
+_OPENAI_SCORE_MODEL = "gpt-4o"
+_OPENAI_INTENT_MODEL = "gpt-4o-mini"
+_OPENAI_BACKOFF_ATTEMPTS = 3
 
 
 def _with_backoff(fn, *args, **kwargs):
@@ -57,28 +58,37 @@ def _with_backoff(fn, *args, **kwargs):
             delay *= 2
 
 
-def _groq_score(prompt: str) -> list[dict]:
+def _openai_score(prompt: str) -> list[dict]:
     """
-    Groq fallback for score_and_rank_products.
-    Sends the exact same scoring prompt to Llama 3.3-70B and parses the result
-    into the same ranked_products format Gemini returns.
+    OpenAI fallback for score_and_rank_products.
+    Sends the compact scoring prompt to gpt-4o with 3-attempt exponential backoff.
     """
-    if not _groq_client:
+    if not _openai_client:
         return []
-    try:
-        resp = _groq_client.chat.completions.create(
-            model=_GROQ_SCORE_MODEL,
-            messages=[{"role": "user", "content": prompt}],
-            response_format={"type": "json_object"},
-            temperature=0.1,
-            max_tokens=8192,
-        )
-        raw = resp.choices[0].message.content or ""
-        logger.info("[GROQ] scoring response: %d chars", len(raw))
-        return json.loads(raw).get("ranked_products", [])
-    except Exception as exc:
-        logger.error("[GROQ] scoring failed: %s", exc)
-        return []
+    import openai as _openai_lib
+    delay = 1.0
+    for attempt in range(_OPENAI_BACKOFF_ATTEMPTS):
+        try:
+            resp = _openai_client.chat.completions.create(
+                model=_OPENAI_SCORE_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                response_format={"type": "json_object"},
+                temperature=0.1,
+                max_tokens=8192,
+            )
+            raw = resp.choices[0].message.content or ""
+            logger.info("[OPENAI] scoring response: %d chars", len(raw))
+            return json.loads(raw).get("ranked_products", [])
+        except (_openai_lib.RateLimitError, _openai_lib.InternalServerError) as exc:
+            if attempt == _OPENAI_BACKOFF_ATTEMPTS - 1:
+                logger.error("[OPENAI] scoring failed after %d attempts: %s", _OPENAI_BACKOFF_ATTEMPTS, exc)
+                return []
+            logger.warning("[OPENAI] scoring attempt %d/%d failed, retrying in %.0fs…", attempt + 1, _OPENAI_BACKOFF_ATTEMPTS, delay)
+            time.sleep(delay)
+            delay *= 2
+        except Exception as exc:
+            logger.error("[OPENAI] scoring failed: %s", exc)
+            return []
 
 
 def _build_compact_scoring_prompt(
@@ -89,10 +99,9 @@ def _build_compact_scoring_prompt(
     community_picks: list[str] | None = None,
 ) -> str:
     """
-    Compressed scoring prompt for the Groq circuit breaker (target <2k tokens).
+    Compressed scoring prompt for the OpenAI circuit breaker (target <2k tokens).
     Uses the markdown signal compressor to include key specs/ratings/buy-signals
     while excluding navigation, SEO prose, and other noise.
-    Omits full logistics context and return policy to stay within Groq's free-tier TPM.
     """
     url_manifest = "\n".join(
         f"  {i + 1}. {r['url']}" for i, r in enumerate(scraped_results)
@@ -112,7 +121,7 @@ def _build_compact_scoring_prompt(
         jsonld = r.get("jsonld") or {}
         name = (jsonld.get("name") or r.get("title") or "Unknown")[:80]
         facts = build_facts_header(jsonld)
-        # 150-char signal snippet — enough for Groq to distinguish product type and quality
+        # 150-char signal snippet — enough for the fallback LLM to distinguish product type and quality
         snippet = _compress_markdown(r.get("markdown") or "", max_chars=150)
         products_block += (
             f"\n## PRODUCT {i}\nTitle: {name}\nURL: {r['url']}\n"
@@ -136,30 +145,41 @@ def _build_compact_scoring_prompt(
     )
 
 
-def _groq_intent(system: str, messages) -> dict:
+def _openai_intent(system: str, messages) -> dict:
     """
-    Groq fallback for classify_intent.
-    Converts Gemini Content objects to OpenAI-style messages and calls Llama 3.1-8B.
+    OpenAI fallback for classify_intent.
+    Converts Gemini Content objects to OpenAI-style messages and calls gpt-4o-mini
+    with 3-attempt exponential backoff.
     """
-    if not _groq_client:
+    if not _openai_client:
         return {}
-    try:
-        groq_msgs = [{"role": "system", "content": system}]
-        for msg in messages:
-            role = "user" if msg.role == "user" else "assistant"
-            groq_msgs.append({"role": role, "content": msg.content or ""})
-        resp = _groq_client.chat.completions.create(
-            model=_GROQ_INTENT_MODEL,
-            messages=groq_msgs,
-            response_format={"type": "json_object"},
-            temperature=0.1,
-            max_tokens=4096,
-        )
-        raw = resp.choices[0].message.content or ""
-        return json.loads(raw)
-    except Exception as exc:
-        logger.error("[GROQ] intent failed: %s", exc)
-        return {}
+    import openai as _openai_lib
+    oai_msgs = [{"role": "system", "content": system}]
+    for msg in messages:
+        role = "user" if msg.role == "user" else "assistant"
+        oai_msgs.append({"role": role, "content": msg.content or ""})
+    delay = 1.0
+    for attempt in range(_OPENAI_BACKOFF_ATTEMPTS):
+        try:
+            resp = _openai_client.chat.completions.create(
+                model=_OPENAI_INTENT_MODEL,
+                messages=oai_msgs,
+                response_format={"type": "json_object"},
+                temperature=0.1,
+                max_tokens=4096,
+            )
+            raw = resp.choices[0].message.content or ""
+            return json.loads(raw)
+        except (_openai_lib.RateLimitError, _openai_lib.InternalServerError) as exc:
+            if attempt == _OPENAI_BACKOFF_ATTEMPTS - 1:
+                logger.error("[OPENAI] intent failed after %d attempts: %s", _OPENAI_BACKOFF_ATTEMPTS, exc)
+                return {}
+            logger.warning("[OPENAI] intent attempt %d/%d failed, retrying in %.0fs…", attempt + 1, _OPENAI_BACKOFF_ATTEMPTS, delay)
+            time.sleep(delay)
+            delay *= 2
+        except Exception as exc:
+            logger.error("[OPENAI] intent failed: %s", exc)
+            return {}
 
 # ── Markdown signal compressor ────────────────────────────────────────────────
 # Keeps only lines that carry numeric or purchase-related signals.
@@ -759,10 +779,10 @@ def classify_intent(messages, city: str = "", country: str = "") -> dict:
         raw_intent = getattr(response, "text", None) or ""
         return json.loads(raw_intent)
     except errors.ServerError:
-        logger.warning("[INTENT] Gemini overloaded — routing to Groq circuit breaker")
-        groq_result = _groq_intent(system, messages)
-        if groq_result:
-            return groq_result
+        logger.warning("[INTENT] Gemini overloaded — routing to OpenAI circuit breaker")
+        openai_result = _openai_intent(system, messages)
+        if openai_result:
+            return openai_result
         _clarify_fallback["reply"] = (
             "The AI is temporarily experiencing high traffic. Please try your search again in a few seconds."
         )
@@ -771,9 +791,9 @@ def classify_intent(messages, city: str = "", country: str = "") -> dict:
         logger.warning("[INTENT] JSON parse failed — raw: %.200s", raw_intent)
         return _clarify_fallback
     except Exception as exc:
-        logger.warning("[INTENT] Gemini error — routing to Groq circuit breaker: %s", exc)
-        groq_result = _groq_intent(system, messages)
-        return groq_result if groq_result else _clarify_fallback
+        logger.warning("[INTENT] Gemini error — routing to OpenAI circuit breaker: %s", exc)
+        openai_result = _openai_intent(system, messages)
+        return openai_result if openai_result else _clarify_fallback
 
 
 def score_and_rank_products(
@@ -1056,14 +1076,14 @@ well below the budget ceiling — excellent value for the price.' Flag any missi
   ]
 }}"""
 
-    # Compact prompt for Groq circuit breaker — fits within the 12k TPM free-tier limit.
-    # Omits full markdown, logistics context, and return policy text.
-    groq_prompt = _build_compact_scoring_prompt(
+    # Compact prompt for OpenAI circuit breaker — omits full markdown, logistics context,
+    # and return policy text to keep token usage reasonable.
+    openai_prompt = _build_compact_scoring_prompt(
         scraped_results, search_description, budget_max, budget_currency, picks
     )
     logger.info(
-        "[SCORING] sending %d products to Gemini (~%d tokens) / Groq fallback (~%d tokens)",
-        len(scraped_results), len(prompt) // 4, len(groq_prompt) // 4,
+        "[SCORING] sending %d products to Gemini (~%d tokens) / OpenAI fallback (~%d tokens)",
+        len(scraped_results), len(prompt) // 4, len(openai_prompt) // 4,
     )
     ranked: list[dict] = []
     raw = ""
@@ -1083,18 +1103,18 @@ well below the budget ceiling — excellent value for the price.' Flag any missi
         ranked = json.loads(raw).get("ranked_products", [])
         logger.info("[SCORING] parsed %d ranked_products", len(ranked))
     except errors.ServerError as exc:
-        logger.warning("[SCORING] Gemini overloaded — routing to Groq circuit breaker: %s", exc)
-        ranked = _groq_score(groq_prompt)
+        logger.warning("[SCORING] Gemini overloaded — routing to OpenAI circuit breaker: %s", exc)
+        ranked = _openai_score(openai_prompt)
         if not ranked:
             return []
     except (json.JSONDecodeError, AttributeError, TypeError, ValueError) as exc:
-        logger.warning("[SCORING] Gemini JSON parse failed (%s) — routing to Groq: %.200s", exc, raw)
-        ranked = _groq_score(groq_prompt)
+        logger.warning("[SCORING] Gemini JSON parse failed (%s) — routing to OpenAI: %.200s", exc, raw)
+        ranked = _openai_score(openai_prompt)
         if not ranked:
             return []
     except Exception as exc:
-        logger.warning("[SCORING] Gemini error — routing to Groq circuit breaker: %s", exc)
-        ranked = _groq_score(groq_prompt)
+        logger.warning("[SCORING] Gemini error — routing to OpenAI circuit breaker: %s", exc)
+        ranked = _openai_score(openai_prompt)
         if not ranked:
             return []
 

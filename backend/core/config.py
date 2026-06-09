@@ -7,7 +7,7 @@ class Settings(BaseSettings):
     supabase_anon_key: str
     tavily_api_key: str
     gemini_api_key: str
-    groq_api_key: str = ""
+    openai_api_key: str = ""
     jwt_secret: str
     rp_id: str = "localhost"
     rp_name: str = "SmartShop Assistant"
