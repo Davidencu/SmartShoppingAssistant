@@ -57,8 +57,8 @@ _READ_TIMEOUT    = 25   # seconds to receive first byte after connect (direct)
 _TIMEOUT         = _CONNECT_TIMEOUT + _READ_TIMEOUT  # asyncio hard cap
 _GHOST_READ_TIMEOUT = 8  # Wayback Machine hangs indefinitely for never-archived URLs
 # Residential proxy peers are real home/mobile connections — they need more time.
-_PROXY_CONNECT_TIMEOUT = 20  # longer TCP setup through the proxy peer chain
-_PROXY_READ_TIMEOUT    = 35  # heavy pages (eMAG 3 MB+) take longer over residential hop
+_PROXY_CONNECT_TIMEOUT = 8  # longer TCP setup through the proxy peer chain
+_PROXY_READ_TIMEOUT    = 15  # heavy pages (eMAG 3 MB+) take longer over residential hop
 
 # Diverse Chrome/Edge fingerprints — each has a different TLS JA3 hash.
 # Domain is hashed → consistent profile per domain (same browser across
@@ -583,7 +583,6 @@ _CAT_PATH_RE = re.compile(
     r"manual|manuals|instruction|instructions|datasheet|datasheets|handbook|handbooks|"
     r"download|downloads|firmware|driver|drivers|software|"
     r"compare|comparison|versus|"
-    r"brands?|branduri[^/]*|toate[^/]*|"   # brand listings (/brands/, /branduri-sportive/) and Romanian all-categories breadcrumbs (/toate-sporturile/)
     r"c"                     # /c/category-name prefix (bb-shop.ro, etc.)
     r")(?:/|$|\?)",
     re.IGNORECASE
