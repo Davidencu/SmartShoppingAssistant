@@ -52,8 +52,8 @@ logger = logging.getLogger(__name__)
 # 20 threads ≈ peak Tavily result count; threads sleep on sockets, not CPU.
 _scrape_executor = ThreadPoolExecutor(max_workers=20, thread_name_prefix="scraper-io")
 
-_CONNECT_TIMEOUT = 10   # seconds to establish TCP + TLS
-_READ_TIMEOUT    = 25   # seconds to receive first byte after connect (direct)
+_CONNECT_TIMEOUT = 5    # ruthless: drop hung niche sites immediately, move on
+_READ_TIMEOUT    = 10   # seconds to receive first byte after connect (direct)
 _TIMEOUT         = _CONNECT_TIMEOUT + _READ_TIMEOUT  # asyncio hard cap
 _GHOST_READ_TIMEOUT = 8  # Wayback Machine hangs indefinitely for never-archived URLs
 # Residential proxy peers are real home/mobile connections — they need more time.
@@ -174,6 +174,27 @@ _proxy_required_domains: set[str] = set()
 
 _DB_CACHE_TTL_HOURS = 24
 
+def sort_urls_for_lanes(urls: list[str]) -> tuple[list[str], list[str]]:
+    """
+    PHASE 3: The Traffic Cop
+
+    Lane A — niche/specialty domains (tier='niche' in supported_retailers) AND
+              confirmed product-detail pages: routed to curl_cffi + JSON-LD scraper.
+    Lane B — enterprise giants, category pages, unknown domains: routed to
+              Gemini Search Grounding.
+    """
+    from services import retailers_service
+    niche_urls: list[str] = []
+    heavy_urls: list[str] = []
+
+    for url in urls:
+        domain = _extract_domain(url)
+        if retailers_service.is_niche_domain(domain) and is_likely_product_url(url):
+            niche_urls.append(url)
+        else:
+            heavy_urls.append(url)
+
+    return niche_urls, heavy_urls
 
 def _db_cache_get(url: str) -> dict | None:
     """

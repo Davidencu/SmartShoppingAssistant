@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 _LOCK = threading.Lock()
 _domains_by_country: dict[str, list[str]] = {}
 _niche_domains_by_country: dict[str, list[str]] = {}
+_niche_domains_flat: frozenset[str] = frozenset()
 _proxy_domains: frozenset[str] = frozenset()
 _last_refresh: float = 0.0
 _TTL = 300.0  # seconds
@@ -69,7 +70,7 @@ def country_name_to_iso(name: str) -> str:
 
 def _refresh() -> None:
     """Reload all active retailers from Supabase. Called when cache is stale."""
-    global _domains_by_country, _niche_domains_by_country, _proxy_domains, _last_refresh
+    global _domains_by_country, _niche_domains_by_country, _niche_domains_flat, _proxy_domains, _last_refresh
     try:
         from services.supabase_service import get_supabase_admin
         rows = (
@@ -82,16 +83,19 @@ def _refresh() -> None:
         )
         by_country: dict[str, list[str]] = {}
         niche: dict[str, list[str]] = {}
+        flat_niche: set[str] = set()
         proxy: set[str] = set()
         for row in rows:
             by_country.setdefault(row["target_country"], []).append(row["domain"])
             if row.get("tier") == "niche":
                 niche.setdefault(row["target_country"], []).append(row["domain"])
+                flat_niche.add(row["domain"])
             if row.get("requires_proxy"):
                 proxy.add(row["domain"])
         with _LOCK:
             _domains_by_country = by_country
             _niche_domains_by_country = niche
+            _niche_domains_flat = frozenset(flat_niche)
             _proxy_domains = frozenset(proxy)
             _last_refresh = time.monotonic()
         logger.info(
@@ -168,6 +172,13 @@ def _bare_domain(raw: str) -> str:
     """Strip scheme and www. from a URL or bare domain so lookups always match."""
     m = re.search(r"(?:https?://)?(?:www\.)?([^/?#]+)", raw or "")
     return m.group(1).lower() if m else (raw or "").lower()
+
+
+def is_niche_domain(domain: str) -> bool:
+    """Return True when the domain has tier='niche' in supported_retailers.
+    Used by the Traffic Cop to decide which URLs go to Lane A (scraper) vs Lane B (grounding)."""
+    _ensure_fresh()
+    return _bare_domain(domain) in _niche_domains_flat
 
 
 def requires_proxy(domain: str) -> bool:

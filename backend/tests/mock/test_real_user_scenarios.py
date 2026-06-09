@@ -63,14 +63,21 @@ def _rich_markdown(title: str, price: float, currency: str) -> str:
 
 
 def _mock_full_pipeline(mocker, intent_payload, products):
+    mocker.patch("services.openai_router.classify_intent_and_route", return_value=intent_payload)
     mocker.patch("services.gemini_service.classify_intent", return_value=intent_payload)
     mocker.patch("services.gemini_service.generate_embedding", return_value=[0.1] * 768)
     mocker.patch(
         "services.gemini_service.research_community_picks",
         return_value={"recommendations": [], "insight": None},
     )
-    # Bypass the product-URL heuristic so short test URLs are never filtered out.
-    mocker.patch("routers.search.is_likely_product_url", return_value=True)
+    # Route all test URLs to Lane A (scraper) so scrape_urls mock is used.
+    mocker.patch(
+        "services.scraper_service.sort_urls_for_lanes",
+        side_effect=lambda urls: (urls, []),
+    )
+    mocker.patch(
+        "services.gemini_service.read_heavy_url_with_grounding", return_value=[]
+    )
     mocker.patch("services.cache_service.lookup_cache", return_value=None)
     mocker.patch("services.tavily_service.search_products", return_value=[
         {"url": p["url"], "title": p["title"]} for p in products
@@ -329,7 +336,8 @@ class TestCommonProductRequests:
         ]
         _mock_full_pipeline(
             mocker,
-            _search_intent("Headphones", "under 1500 RON", 1500.0, "RON", "Sony WH-1000XM5 noise cancelling"),
+            _search_intent("Headphones", "under 1500 RON", 1500.0, "RON", "Sony WH-1000XM5 noise cancelling",
+                           ["altex.ro", "emag.ro", "flanco.ro"]),
             headphones,
         )
         resp = client.post(
@@ -381,7 +389,8 @@ class TestCommonProductRequests:
         ]
         _mock_full_pipeline(
             mocker,
-            _search_intent("Mountain Bike", "under 2500 RON", 2500.0, "RON", "Trek for adults", ["decathlon.ro"]),
+            _search_intent("Mountain Bike", "under 2500 RON", 2500.0, "RON", "Trek for adults",
+                           ["trek.ro", "ciclist.ro", "emag.ro"]),
             bikes,
         )
         resp = client.post(
@@ -403,7 +412,8 @@ class TestCommonProductRequests:
         ]
         _mock_full_pipeline(
             mocker,
-            _search_intent("Earbuds", "under 200 USD", 200.0, "USD", "Apple AirPods Pro"),
+            _search_intent("Earbuds", "under 200 USD", 200.0, "USD", "Apple AirPods Pro",
+                           ["apple.com", "amazon.com", "sony.com"]),
             earbuds,
         )
         resp = client.post(
@@ -423,10 +433,10 @@ class TestAmbiguousRequestsTriggerClarify:
 
     def test_just_phone_no_budget_no_brand(self, client, mock_supabase, auth_token, mocker):
         """'I want a phone' — no budget, no brand → ask for both."""
+        _clarify = _clarify_intent("What's your budget and do you have a brand preference (Samsung, Apple, Xiaomi)?")
         tavily = mocker.patch("services.tavily_service.search_products")
-        mocker.patch("services.gemini_service.classify_intent", return_value=_clarify_intent(
-            "What's your budget and do you have a brand preference (Samsung, Apple, Xiaomi)?"
-        ))
+        mocker.patch("services.openai_router.classify_intent_and_route", return_value=_clarify)
+        mocker.patch("services.gemini_service.classify_intent", return_value=_clarify)
         resp = client.post(
             CHAT_URL,
             json={"messages": [{"role": "user", "content": "I want a phone"}]},
@@ -441,14 +451,16 @@ class TestAmbiguousRequestsTriggerClarify:
 
     def test_laptop_no_budget(self, client, mock_supabase, auth_token, mocker):
         """'I need a laptop' — category found, budget missing → ask for budget."""
-        tavily = mocker.patch("services.tavily_service.search_products")
-        mocker.patch("services.gemini_service.classify_intent", return_value=_clarify_intent(
+        _clarify = _clarify_intent(
             "What's your budget for the laptop?",
             collected={
                 "category": "Laptop", "budget": None,
                 "budget_max": None, "budget_currency": None, "preference": None,
             },
-        ))
+        )
+        tavily = mocker.patch("services.tavily_service.search_products")
+        mocker.patch("services.openai_router.classify_intent_and_route", return_value=_clarify)
+        mocker.patch("services.gemini_service.classify_intent", return_value=_clarify)
         resp = client.post(
             CHAT_URL,
             json={"messages": [{"role": "user", "content": "I need a laptop"}]},
@@ -463,14 +475,16 @@ class TestAmbiguousRequestsTriggerClarify:
 
     def test_bike_for_unknown_person_triggers_clarify(self, client, mock_supabase, auth_token, mocker):
         """'I need a bike for 800 RON' — ambiguous (adult or child? mountain or road?)."""
-        tavily = mocker.patch("services.tavily_service.search_products")
-        mocker.patch("services.gemini_service.classify_intent", return_value=_clarify_intent(
+        _clarify = _clarify_intent(
             "Is this bike for an adult or a child? And what type — mountain, road, or city?",
             collected={
                 "category": "Bike", "budget": "800 RON",
                 "budget_max": 800.0, "budget_currency": "RON", "preference": None,
             },
-        ))
+        )
+        tavily = mocker.patch("services.tavily_service.search_products")
+        mocker.patch("services.openai_router.classify_intent_and_route", return_value=_clarify)
+        mocker.patch("services.gemini_service.classify_intent", return_value=_clarify)
         resp = client.post(
             CHAT_URL,
             json={"messages": [{"role": "user", "content": "I need a bike for 800 RON"}]},
@@ -485,14 +499,16 @@ class TestAmbiguousRequestsTriggerClarify:
 
     def test_vague_quality_adjective_triggers_clarify(self, client, mock_supabase, auth_token, mocker):
         """'best quality laptop under 2000 RON' — 'best quality' is not a concrete spec."""
-        tavily = mocker.patch("services.tavily_service.search_products")
-        mocker.patch("services.gemini_service.classify_intent", return_value=_clarify_intent(
+        _clarify = _clarify_intent(
             "What will you use the laptop for — office work, gaming, or video editing?",
             collected={
                 "category": "Laptop", "budget": "under 2000 RON",
                 "budget_max": 2000.0, "budget_currency": "RON", "preference": None,
             },
-        ))
+        )
+        tavily = mocker.patch("services.tavily_service.search_products")
+        mocker.patch("services.openai_router.classify_intent_and_route", return_value=_clarify)
+        mocker.patch("services.gemini_service.classify_intent", return_value=_clarify)
         resp = client.post(
             CHAT_URL,
             json={"messages": [{"role": "user", "content": "best quality laptop under 2000 RON"}]},
@@ -504,8 +520,7 @@ class TestAmbiguousRequestsTriggerClarify:
 
     def test_off_topic_request_returns_chat_and_no_search(self, client, mock_supabase, auth_token, mocker):
         """'What is the capital of France?' — completely off-topic → CHAT."""
-        tavily = mocker.patch("services.tavily_service.search_products")
-        mocker.patch("services.gemini_service.classify_intent", return_value={
+        _chat = {
             "intent": "CHAT",
             "reply": "I'm a shopping assistant and can't help with that — what product can I help you find?",
             "collected_params": {
@@ -514,7 +529,10 @@ class TestAmbiguousRequestsTriggerClarify:
             },
             "search_query": None,
             "local_domains": None,
-        })
+        }
+        tavily = mocker.patch("services.tavily_service.search_products")
+        mocker.patch("services.openai_router.classify_intent_and_route", return_value=_chat)
+        mocker.patch("services.gemini_service.classify_intent", return_value=_chat)
         resp = client.post(
             CHAT_URL,
             json={"messages": [{"role": "user", "content": "What is the capital of France?"}]},
@@ -566,7 +584,8 @@ class TestNoPreferenceHandling:
         ]
         _mock_full_pipeline(
             mocker,
-            _search_intent("Phone", "under 1000 RON", 1000.0, "RON", "best value for budget"),
+            _search_intent("Phone", "under 1000 RON", 1000.0, "RON", "best value for budget",
+                           ["emag.ro", "altex.ro"]),
             phones,
         )
         resp = client.post(
@@ -587,10 +606,12 @@ class TestMultiTurnConversation:
         Turn 1: 'I need an ASUS laptop'     → CLARIFY (budget?)
         Turn 2: 'budget is 2000 RON'         → SEARCH
         """
-        mocker.patch("services.gemini_service.classify_intent", return_value=_clarify_intent(
+        _clarify = _clarify_intent(
             "What's your budget?",
             collected={"category": "Laptop", "budget": None, "budget_max": None, "budget_currency": None, "preference": "ASUS brand"},
-        ))
+        )
+        mocker.patch("services.openai_router.classify_intent_and_route", return_value=_clarify)
+        mocker.patch("services.gemini_service.classify_intent", return_value=_clarify)
         resp1 = client.post(
             CHAT_URL,
             json={"messages": [{"role": "user", "content": "I need an ASUS laptop"}]},
@@ -632,10 +653,12 @@ class TestMultiTurnConversation:
         Turn 2: 'ASUS'                → CLARIFY (budget?)
         Turn 3: '3000 RON for gaming' → SEARCH
         """
-        mocker.patch("services.gemini_service.classify_intent", return_value=_clarify_intent(
+        _clarify1 = _clarify_intent(
             "What brand or type of laptop?",
             collected={"category": "Laptop", "budget": None, "budget_max": None, "budget_currency": None, "preference": None},
-        ))
+        )
+        mocker.patch("services.openai_router.classify_intent_and_route", return_value=_clarify1)
+        mocker.patch("services.gemini_service.classify_intent", return_value=_clarify1)
         resp = client.post(
             CHAT_URL,
             json={"messages": [{"role": "user", "content": "laptop"}]},
@@ -643,10 +666,12 @@ class TestMultiTurnConversation:
         )
         assert sse_result(resp)["intent"] == "CLARIFY"
 
-        mocker.patch("services.gemini_service.classify_intent", return_value=_clarify_intent(
+        _clarify2 = _clarify_intent(
             "What's your budget?",
             collected={"category": "Laptop", "budget": None, "budget_max": None, "budget_currency": None, "preference": "ASUS brand"},
-        ))
+        )
+        mocker.patch("services.openai_router.classify_intent_and_route", return_value=_clarify2)
+        mocker.patch("services.gemini_service.classify_intent", return_value=_clarify2)
         resp = client.post(
             CHAT_URL,
             json={"messages": [
@@ -697,7 +722,8 @@ class TestMultiTurnConversation:
         ]
         _mock_full_pipeline(
             mocker,
-            _search_intent("Laptop", "under 2000 RON", 2000.0, "RON", "ASUS office use"),
+            _search_intent("Laptop", "under 2000 RON", 2000.0, "RON", "ASUS office use",
+                           ["emag.ro", "altex.ro"]),
             laptops,
         )
         resp = client.post(
@@ -722,7 +748,7 @@ class TestLocationFromSupabase:
     def test_city_and_country_from_profile_passed_to_classify_intent(
         self, client, mock_supabase, auth_token, mocker
     ):
-        """The user's profile city/country must reach classify_intent as positional args."""
+        """The user's profile city/country must reach the intent router as positional args."""
         profile_resp = MagicMock()
         profile_resp.data = {"city": "Bucharest", "country": "Romania"}
         (
@@ -733,7 +759,7 @@ class TestLocationFromSupabase:
             .execute.return_value
         ) = profile_resp
 
-        classify_mock = mocker.patch("services.gemini_service.classify_intent", return_value={
+        _chat = {
             "intent": "CHAT",
             "reply": "What are you looking to buy?",
             "collected_params": {
@@ -742,7 +768,9 @@ class TestLocationFromSupabase:
             },
             "search_query": None,
             "local_domains": None,
-        })
+        }
+        classify_mock = mocker.patch("services.openai_router.classify_intent_and_route", return_value=_chat)
+        mocker.patch("services.gemini_service.classify_intent", return_value=_chat)
 
         client.post(
             CHAT_URL,
@@ -758,8 +786,8 @@ class TestLocationFromSupabase:
     def test_missing_profile_location_passes_empty_strings(
         self, client, mock_supabase, auth_token, mocker
     ):
-        """When the profile has no city/country, classify_intent gets empty strings, not None."""
-        classify_mock = mocker.patch("services.gemini_service.classify_intent", return_value={
+        """When the profile has no city/country, the intent router gets empty strings, not None."""
+        _chat = {
             "intent": "CHAT",
             "reply": "What are you looking to buy?",
             "collected_params": {
@@ -768,7 +796,9 @@ class TestLocationFromSupabase:
             },
             "search_query": None,
             "local_domains": None,
-        })
+        }
+        classify_mock = mocker.patch("services.openai_router.classify_intent_and_route", return_value=_chat)
+        mocker.patch("services.gemini_service.classify_intent", return_value=_chat)
 
         client.post(
             CHAT_URL,
@@ -792,15 +822,19 @@ class TestLocationFromSupabase:
             .execute.return_value
         ) = profile_resp
 
-        mocker.patch("services.gemini_service.classify_intent", return_value=_search_intent(
-            "Laptop", "under 2000 RON", 2000.0, "RON", "ASUS", ["emag.ro"]
-        ))
+        _intent = _search_intent("Laptop", "under 2000 RON", 2000.0, "RON", "ASUS", ["emag.ro"])
+        mocker.patch("services.openai_router.classify_intent_and_route", return_value=_intent)
+        mocker.patch("services.gemini_service.classify_intent", return_value=_intent)
         mocker.patch("services.gemini_service.generate_embedding", return_value=[0.1] * 768)
         mocker.patch(
             "services.gemini_service.research_community_picks",
             return_value={"recommendations": [], "insight": None},
         )
-        mocker.patch("routers.search.is_likely_product_url", return_value=True)
+        mocker.patch(
+            "services.scraper_service.sort_urls_for_lanes",
+            side_effect=lambda urls: (urls, []),
+        )
+        mocker.patch("services.gemini_service.read_heavy_url_with_grounding", return_value=[])
         mocker.patch("services.cache_service.lookup_cache", return_value=None)
         mocker.patch("services.tavily_service.search_products", return_value=[
             {"url": "https://emag.ro/asus", "title": "ASUS Laptop"}

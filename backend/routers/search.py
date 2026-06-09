@@ -9,47 +9,12 @@ from starlette.concurrency import run_in_threadpool
 
 from models.search import ChatRequest, ChatResponse, IntentParams, Product, ProductScores
 from routers.auth import get_current_user
-from services import cache_service, gemini_service, retailers_service, scraper_service, tavily_service
-from services.scraper_service import is_likely_product_url
+from services import cache_service, gemini_service, openai_router, retailers_service, scraper_service, tavily_service
 from services.supabase_service import get_supabase_admin
 
 router = APIRouter(prefix="/search", tags=["search"])
 logger = logging.getLogger(__name__)
 
-# ── Demo: mainstream domain blocklist ────────────────────────────────────────
-# Proof-of-concept filter: drop any Tavily result whose domain is in this set
-# so the demo only exercises niche retailers and the ghost-layer fallback.
-# Remove this block (and the filter in _run_product_pipeline) before production.
-_DEMO_BLOCKED_DOMAINS: frozenset[str] = frozenset({
-    # ── North America mainstream ──────────────────────────────────────────────
-    "amazon.com", "walmart.com", "target.com", "bestbuy.com",
-    "costco.com", "macys.com", "nordstrom.com", "apple.com", "nike.com", "adidas.com",
-    # ── UK mainstream ─────────────────────────────────────────────────────────
-    "amazon.co.uk", "currys.co.uk", "argos.co.uk", "johnlewis.com", "asos.com",
-    # ── Germany mainstream ────────────────────────────────────────────────────
-    "amazon.de", "mediamarkt.de", "saturn.de", "otto.de", "zalando.de",
-    # ── France mainstream ─────────────────────────────────────────────────────
-    "amazon.fr", "cdiscount.com", "darty.com", "boulanger.com", "zalando.fr",
-    # ── Italy mainstream ──────────────────────────────────────────────────────
-    "amazon.it", "euronics.it", "trony.it", "mediaworld.it", "unieuro.it",
-    # ── Spain mainstream ──────────────────────────────────────────────────────
-    "amazon.es", "mediamarkt.es",
-    # ── Poland mainstream ─────────────────────────────────────────────────────
-    "amazon.pl", "allegro.pl",
-    # ── Netherlands / Belgium mainstream ─────────────────────────────────────
-    "amazon.nl", "coolblue.nl", "bol.com", "mediamarkt.nl",
-    # ── Romania mainstream ────────────────────────────────────────────────────
-    "emag.ro", "altex.ro", "flanco.ro", "cel.ro",
-    # ── Czech / Slovakia mainstream ───────────────────────────────────────────
-    "mall.cz",
-    # ── Nordics mainstream ────────────────────────────────────────────────────
-    "amazon.se", "power.fi",
-    # ── Global mainstream ─────────────────────────────────────────────────────
-    "amazon.ca", "amazon.com.au", "amazon.co.jp", "amazon.in",
-    "amazon.com.br", "amazon.com.mx",
-    "ebay.com", "ebay.co.uk", "ebay.de", "ebay.fr", "ebay.it", "ebay.es",
-    "zalando.com", "hm.com", "uniqlo.com", "aliexpress.com",
-})
 
 # ── Store display names ───────────────────────────────────────────────────────
 # Maps bare domain → human-readable store name shown in the UI status messages.
@@ -202,18 +167,18 @@ _ISO_TO_LANGUAGE: dict[str, str] = {
 # Translated status messages keyed by ISO 639-1 code then message key
 _STATUS_I18N: dict[str, dict[str, str]] = {
     "en": {
-        "intent":           "Classifying intent...",
-        "researching":      "Researching community recommendations...",
-        "cache":            "Checking cache...",
-        "search":           "Searching for products...",
-        "found_pages":      "Found {n} page{s} — opening {stores}...",
-        "browsed":          "Browsed {store} ({done}/{total})",
-        "found_prods":      "Found {n} product{s} within budget — calculating scores...",
-        "scoring":          "Scoring with AI...",
-        "mainstream_try":   "Nothing in specialty stores — trying mainstream retailers...",
-        "global":           "Trying global search...",
-        "suggestions":      "Generating suggestions...",
-        "results_header":   "Here are the top products ranked by value score:",
+        "intent":               "Classifying intent...",
+        "researching":          "Researching community recommendations...",
+        "cache":                "Checking cache...",
+        "search":               "Searching for products...",
+        "found_pages":          "Found {n} page{s} — opening {stores}...",
+        "browsed":              "Browsed {store} ({done}/{total})",
+        "found_prods":          "Found {n} product{s} within budget — calculating scores...",
+        "scoring":              "Scoring with AI...",
+        "mainstream_try":       "Nothing in specialty stores — trying mainstream retailers...",
+        "global":               "Trying global search...",
+        "suggestions":          "Generating suggestions...",
+        "results_header":       "Here are the top products ranked by value score:",
         "fallback": (
             "I couldn't find this product on local retailers — all results were "
             "out of stock or didn't meet your criteria. "
@@ -515,7 +480,8 @@ def _pick_contenders(
     candidates = [
         s for s in scraped
         if (
-            len(s.get("markdown") or "") > 400
+            # Lane B results are pre-validated by Gemini; skip markdown length check
+            (s.get("_lane") == "B" or len(s.get("markdown") or "") > 400)
             and _available(s)
             and _in_budget(s)
             and _above_floor(s)
@@ -611,15 +577,15 @@ async def _run_product_pipeline(
     price_floor: float | None = None,
     community_picks: list[str] | None = None,
     specific_models: list[str] | None = None,
-    no_global_supplement: bool = False,
 ) -> list[dict]:
     """
-    3-phase pipeline:
+    5-phase pipeline:
 
-    Phase 1 — Tavily radar: cast a wide net (~25 URLs).
-    Phase 2 — curl_cffi scrape + contender filter: parallel-scrape all URLs,
-              drop out-of-stock / over-budget pages → top 10 contenders.
-    Phase 3 — Gemini judge: 40-point scoring matrix → top 3 ranked products.
+    Phase 1 — Tavily radar: cast a wide net using specific model names or query.
+    Phase 3 — Traffic Cop: split URLs into Lane A (niche) and Lane B (heavy).
+    Phase 4A — Lane A: curl_cffi + JSON-LD scraper for niche product pages.
+    Phase 4B — Lane B: Gemini Search Grounding for enterprise/category pages.
+    Phase 5 — Gemini judge: 40-point scoring matrix → top 3 ranked products.
 
     Returns [] on any soft or hard failure — callers handle the empty case.
     on_event: optional async callable(dict) — receives status events during each phase.
@@ -649,33 +615,6 @@ async def _run_product_pipeline(
         )
         logger.info("[P1/TAVILY] local (%s): %d results", ", ".join(local_domains), len(tavily_results))
 
-    if len(tavily_results) == 0 and not is_global and not no_global_supplement:
-        # Supplement with global e-commerce domains when local/model searches come up empty.
-        # Skipped for is_global=True runs and for the niche-first pass (no_global_supplement=True)
-        # so the caller can try mainstream country domains before jumping straight to global.
-        supplement_domains = retailers_service.get_global_domains() or None
-        if specific_models:
-            seen_pdp = {r["url"] for r in tavily_results}
-            for model in specific_models[:3]:
-                model_hits = await run_in_threadpool(
-                    tavily_service.search_products, f"{model} buy", 8, supplement_domains
-                )
-                for r in model_hits:
-                    if r["url"] not in seen_pdp:
-                        tavily_results.append(r)
-                        seen_pdp.add(r["url"])
-            logger.info("[P1/TAVILY] specific_models global supplement: %d results", len(tavily_results))
-        else:
-            global_results = await run_in_threadpool(
-                tavily_service.search_products, query, 15, supplement_domains
-            )
-            logger.info("[P1/TAVILY] global supplement: %d results", len(global_results))
-            seen = {r["url"] for r in tavily_results}
-            for r in global_results:
-                if r["url"] not in seen:
-                    tavily_results.append(r)
-                    seen.add(r["url"])
-
     n_initial = len(tavily_results)
     if excluded_urls:
         before_excl = len(tavily_results)
@@ -684,18 +623,8 @@ async def _run_product_pipeline(
         if dropped:
             logger.info("[P1/TAVILY] dropped %d excluded URL(s)", dropped)
 
-    # ── DEMO: drop mainstream domains ────────────────────────────────────────
-    before_demo = len(tavily_results)
-    tavily_results = [
-        r for r in tavily_results
-        if urlparse(r["url"]).netloc.replace("www.", "") not in _DEMO_BLOCKED_DOMAINS
-    ]
-    if len(tavily_results) < before_demo:
-        logger.info("[DEMO] dropped %d mainstream domain URL(s)", before_demo - len(tavily_results))
-
-    # ── STRICT DOMAIN ENFORCEMENT (The Bouncer) ──────────────────────────
-    # Tavily's include_domains is a soft hint. We must hard-filter the results
-    # so mainstream aggregators never leak into our niche-first execution passes.
+    # ── Strict Domain Enforcement (The Bouncer) ───────────────────────────────
+    # Tavily's include_domains is a soft hint; hard-filter to requested domains only.
     if local_domains:
         before_strict = len(tavily_results)
         strict_results = []
@@ -708,42 +637,35 @@ async def _run_product_pipeline(
         tavily_results = strict_results
         dropped_strict = before_strict - len(tavily_results)
         if dropped_strict:
-            logger.info("[P1/TAVILY] Strict domain lock enforced. Dropped %d leaked URLs.", dropped_strict)
+            logger.info("[P1/TAVILY] Strict domain lock: dropped %d leaked URLs.", dropped_strict)
 
-    # Drop category/listing/search URLs — only scrape product detail pages
-    before_shape = len(tavily_results)
-    kept_results = []
-    for r in tavily_results:
-        if is_likely_product_url(r["url"]):
-            kept_results.append(r)
-        else:
-            logger.info("[GATEKEEPER] dropped non-PDP: %s", r["url"])
-    tavily_results = kept_results
-    dropped_cat = before_shape - len(tavily_results)
-    if dropped_cat:
-        logger.info("[P1/TAVILY] dropped %d category/listing URLs via shape filter", dropped_cat)
-
-    logger.info("[P1/TAVILY] %d total URLs for fast filter", len(tavily_results))
+    logger.info("[P1/TAVILY] %d URLs after filters → Traffic Cop", len(tavily_results))
     if not tavily_results:
-        logger.warning("[P1/TAVILY] no URLs passed filters — returning empty")
+        logger.warning("[P1/TAVILY] no URLs after filters — returning empty")
         return []
 
     url_to_title = {r["url"]: r.get("title", "") for r in tavily_results}
+    all_urls = [r["url"] for r in tavily_results]
 
-    # ── Phase 2: curl_cffi scrape + contender filter ──────────────────────
-    urls = [r["url"] for r in tavily_results]
+    # ── Phase 3: Traffic Cop — split into Lane A (niche) and Lane B (heavy) ──
+    from services.scraper_service import sort_urls_for_lanes
+    niche_urls, heavy_urls = sort_urls_for_lanes(all_urls)
+    logger.info(
+        "[TRAFFIC-COP] %d niche (Lane A scraper), %d heavy (Lane B grounding)",
+        len(niche_urls), len(heavy_urls),
+    )
 
     if on_event:
         unique_domains = list(dict.fromkeys(
-            urlparse(u).netloc.removeprefix("www.") for u in urls
+            urlparse(u).netloc.removeprefix("www.") for u in all_urls
         ))
         stores_str = ", ".join(_store_name(d) for d in unique_domains)
         await on_event({
             "type": "status",
-            "message": _t(user_language, "found_pages", n=len(urls), s="s" if len(urls) != 1 else "", stores=stores_str),
+            "message": _t(user_language, "found_pages", n=len(all_urls), s="s" if len(all_urls) != 1 else "", stores=stores_str),
         })
 
-    # Per-URL callback: fires as each scrape resolves (parallel, out-of-order)
+    # ── Phase 4A: Lane A — curl_cffi + JSON-LD scraper (niche product pages) ─
     async def _on_url_done(url: str, done: int, total: int) -> None:
         if on_event:
             domain = urlparse(url).netloc.removeprefix("www.") or url
@@ -753,11 +675,71 @@ async def _run_product_pipeline(
                               store=_store_name(domain), done=done, total=total),
             })
 
-    scraped: list[dict] = await scraper_service.scrape_urls(
-        urls, on_done=_on_url_done if on_event else None
-    )
-    for s in scraped:
-        s["title"] = url_to_title.get(s["url"], "")
+    async def _run_lane_a() -> list[dict]:
+        if not niche_urls:
+            return []
+        results = await scraper_service.scrape_urls(
+            niche_urls, on_done=_on_url_done if on_event else None
+        )
+        for s in results:
+            s["title"] = url_to_title.get(s["url"], "")
+        return results
+
+    # ── Phase 4B: Lane B — Gemini Search Grounding (enterprise/category pages) ─
+    async def _run_lane_b() -> list[dict]:
+        if not heavy_urls:
+            return []
+        lane_b_records: list[dict] = []
+        for url in heavy_urls[:6]:  # cap at 6 grounding calls per pipeline run
+            products = await run_in_threadpool(
+                gemini_service.read_heavy_url_with_grounding,
+                url,
+                params.budget_max,
+                params.budget_currency,
+                params.category or "",
+                user_language,
+            )
+            for p in products:
+                if not p.get("in_stock", True):
+                    continue
+                if excluded_urls and p["url"] in excluded_urls:
+                    continue
+                name = p.get("name", "Unknown")
+                price = p.get("price", 0)
+                currency = p.get("currency") or params.budget_currency or "RON"
+                md = (
+                    f"{name}\n"
+                    f"Price: {price} {currency}\n"
+                    f"Availability: In Stock\n"
+                    f"Category: {params.category or ''}\n"
+                    f"Source URL: {url}\n"
+                    f"Product URL: {p['url']}\n"
+                    f"This product was found via Google Search Grounding on a category "
+                    f"page or major retailer. It is confirmed in stock and within budget "
+                    f"({params.budget_max} {params.budget_currency}).\n"
+                )
+                lane_b_records.append({
+                    "url": p["url"],
+                    "title": name,
+                    "markdown": md,
+                    "jsonld": {
+                        "name": name,
+                        "price": price,
+                        "currency": currency,
+                        "availability": "In Stock",
+                        "image": p.get("image_url"),
+                    },
+                    "has_buy_button": True,
+                    "shipping_policy_url": None,
+                    "return_policy_text": None,
+                    "_lane": "B",
+                })
+        logger.info("[LANE-B] produced %d product records", len(lane_b_records))
+        return lane_b_records
+
+    # Run both lanes in parallel
+    lane_a_results, lane_b_results = await asyncio.gather(_run_lane_a(), _run_lane_b())
+    scraped: list[dict] = lane_a_results + lane_b_results
 
     contenders = _pick_contenders(
         scraped, params.budget_max,
@@ -766,29 +748,27 @@ async def _run_product_pipeline(
     )
 
     # ── Diagnostic counts ─────────────────────────────────────────────────────
-    _n_with_content = sum(1 for s in scraped if len(s.get("markdown") or "") > 400)
-    _n_fetch_fail   = len(scraped) - _n_with_content
-    _n_no_struct    = sum(
-        1 for s in scraped
-        if len(s.get("markdown") or "") > 400 and not (s.get("jsonld") or {})
-    )
-    _n_filter_fail  = _n_with_content - len(contenders)
+    _n_lane_a       = len(lane_a_results)
+    _n_lane_b       = len(lane_b_results)
+    _n_with_content = sum(1 for s in lane_a_results if len(s.get("markdown") or "") > 400)
+    _n_fetch_fail   = _n_lane_a - _n_with_content
+    _n_filter_fail  = (len(scraped) - len(contenders))
 
     logger.info(
-        "[P2/SCRAPER] %d/%d URLs passed contender filter",
-        len(contenders), len(scraped),
+        "[P4/LANES] Lane A: %d scraped, Lane B: %d products → %d contenders",
+        _n_lane_a, _n_lane_b, len(contenders),
     )
     for c in contenders:
-        logger.info("  ↳ %s  (%d chars, price=%s)",
-                    c["url"], len(c.get("markdown", "")),
+        logger.info("  ↳ [%s] %s  (%d chars, price=%s)",
+                    c.get("_lane", "A"), c["url"], len(c.get("markdown", "")),
                     (c.get("jsonld") or {}).get("price", "?"))
 
     if not contenders:
         logger.warning(
-            "[P2/SCRAPER] no contenders after filter — returning empty\n"
-            "  [DIAG] candidates=%d  gatekeeper_rej=%d  fetch_fail=%d  "
-            "no_struct=%d  filter_fail=%d  contenders=0  final=0",
-            n_initial, n_initial - len(urls), _n_fetch_fail, _n_no_struct, _n_filter_fail,
+            "[P4/LANES] no contenders after filter — returning empty\n"
+            "  [DIAG] tavily=%d  lane_a=%d  lane_b=%d  fetch_fail=%d  "
+            "filter_fail=%d  contenders=0  final=0",
+            n_initial, _n_lane_a, _n_lane_b, _n_fetch_fail, _n_filter_fail,
         )
         return []
 
@@ -799,7 +779,7 @@ async def _run_product_pipeline(
             "message": _t(user_language, "found_prods", n=n, s="s" if n != 1 else ""),
         })
 
-    # ── Phase 3: Gemini judge ─────────────────────────────────────────────
+    # ── Phase 5: Gemini judge ─────────────────────────────────────────────────
     if on_event:
         await on_event({"type": "status", "message": _t(user_language, "scoring")})
 
@@ -819,7 +799,7 @@ async def _run_product_pipeline(
         user_language,
         community_picks or [],
     )
-    logger.info("[P3/GEMINI] returned %d ranked products", len(ranked))
+    logger.info("[P5/GEMINI] returned %d ranked products", len(ranked))
 
     valid_urls = {r["url"] for r in contenders}
     before = len(ranked)
@@ -833,13 +813,13 @@ async def _run_product_pipeline(
     ]
     if len(ranked) < before:
         logger.warning(
-            "[P4/GEMINI] dropped %d hallucinated URL(s), %d remain",
+            "[P5/GEMINI] dropped %d hallucinated URL(s), %d remain",
             before - len(ranked), len(ranked),
         )
 
     if not ranked and contenders:
         logger.warning(
-            "[P3/HEURISTIC] AI scorer returned nothing — price-sort fallback on %d contenders",
+            "[P5/HEURISTIC] AI scorer returned nothing — price-sort fallback on %d contenders",
             len(contenders),
         )
         ranked = _heuristic_rank(contenders, params.budget_max)
@@ -847,18 +827,16 @@ async def _run_product_pipeline(
     logger.info(
         "[DIAG]\n"
         "  Candidates found (Tavily): %d\n"
-        "  Rejected by gatekeeper:   %d\n"
-        "  Sent to scraper:          %d\n"
-        "  Fetch failures:           %d\n"
-        "  No structured data:       %d\n"
-        "  Failed filters (OOS/budget/category): %d\n"
+        "  Lane A (niche scraper):   %d\n"
+        "  Lane B (grounding):       %d\n"
+        "  Lane A fetch failures:    %d\n"
+        "  Failed filters:           %d\n"
         "  Contenders → Gemini:      %d\n"
         "  Final recommendations:    %d",
         n_initial,
-        n_initial - len(urls),
-        len(urls),
+        _n_lane_a,
+        _n_lane_b,
         _n_fetch_fail,
-        _n_no_struct,
         _n_filter_fail,
         len(contenders),
         len(ranked),
@@ -969,13 +947,14 @@ async def chat(
 
     async def run_pipeline() -> None:
         try:
-            # ── 1. Intent classification ────────────────────────────────────
-            # Use country to guess the language for the first status message
-            # before Gemini returns the actual language_code.
+            # ── 1. Intent classification (OpenAI gpt-4o-mini front-end router) ─
+            # Rule 3: gpt-4o-mini is the first gate — classifies intent, extracts
+            # budget, generates localized query, and flags mainstream commodities.
+            # Falls back to Gemini automatically if OpenAI is unavailable.
             default_language = _country_to_language(country) if country else "English"
             await emit({"type": "status", "message": _t(default_language, "intent")})
             intent_data = await run_in_threadpool(
-                gemini_service.classify_intent, req.messages, city, country
+                openai_router.classify_intent_and_route, req.messages, city, country
             )
 
             # Detect user language from Gemini's response; fall back to country guess.
@@ -1028,31 +1007,25 @@ async def chat(
             excluded_urls: set[str] = set(req.excluded_urls) if req.excluded_urls else set()
 
             # Domain resolution: DB is authoritative, Gemini's hint is fallback.
-            # supported_retailers table maps ISO country codes → active domains +
-            # proxy requirements, so we never need to hardcode retailer lists.
-            # niche_domains = mid-market/specialty tier (searched first — better
-            # scrapability and JSON-LD than mainstream platforms like Amazon/eMag).
+            # The Traffic Cop inside _run_product_pipeline splits these into
+            # niche (Lane A scraper) vs heavy (Lane B Gemini grounding) automatically.
             country_code = retailers_service.country_name_to_iso(country) if country else ""
             if search_globally:
-                niche_domains: list[str] | None = None
                 local_domains = None
             elif not country_code:
-                # Unknown country — use Gemini's domain hint; no niche split available
-                niche_domains = None
                 local_domains = gemini_domains or None
             else:
                 db_domains = retailers_service.get_domains_for_country(country_code)
-                niche_domains = retailers_service.get_niche_domains_for_country(country_code) or None
                 local_domains = db_domains or gemini_domains or None
 
             deterministic_query, local_domains = _build_search_query(
                 gemini_localized_query, collected_params, local_domains
             )
             logger.info(
-                "[SEARCH] query=%r  country_code=%r  niche=%d  all=%d  city=%r  country=%r  "
+                "[SEARCH] query=%r  country_code=%r  all_domains=%d  city=%r  country=%r  "
                 "excluded=%d  global=%s  refinement=%s",
                 deterministic_query, country_code,
-                len(niche_domains or []), len(local_domains or []),
+                len(local_domains or []),
                 city, country, len(excluded_urls), search_globally, is_refinement,
             )
 
@@ -1086,14 +1059,10 @@ async def chat(
                 await emit({"type": "result", "data": response.model_dump()})
                 return
 
-            # ── 4. Community research phase ─────────────────────────────────
-            # Runs before Tavily on every cache miss. Gemini uses Google Search
-            # grounding to find Reddit/Twitter/forum consensus, then:
-            #   • streams the insight to the frontend (masks Tavily latency)
-            #   • passes picks to the scorer as a soft quality_confidence signal
-            # NOTE: picks are NOT injected into the Tavily query — they are
-            # guidance only. Injecting model names would constrain Tavily to those
-            # exact (often expensive/out-of-budget) products and return zero results.
+            # ── 4. Phase 2: Community research (Gemini + Google Search grounding) ──
+            # Gemini searches Reddit/forums for the most recommended specific models.
+            # If Phase 1 (OpenAI) didn't extract a model name, the picks become the
+            # primary Tavily search input (Phase 3), replacing the generic query.
             community_picks: list[str] = []
             await emit({"type": "status", "message": _t(detected_language, "researching")})
             try:
@@ -1113,33 +1082,29 @@ async def chat(
             except Exception as _research_exc:
                 logger.warning("[RESEARCH] phase failed, continuing without: %s", _research_exc)
 
-            # ── 5. Niche-first pipeline ─────────────────────────────────────
-            # 5a. Local niche + global niche combined.
-            # Niche/mid-market sites have lighter anti-bot measures and richer
-            # JSON-LD — combining both geographies maximises coverage without
-            # touching proxy-required mainstream domains.
+            # Wire Phase 2 picks → Phase 3 Tavily when Phase 1 found no specific model.
+            # Phase 1's specific_models (user-named model) always takes priority.
+            effective_models: list[str] | None = specific_models
+            if not effective_models and community_picks:
+                effective_models = community_picks[:3]
+                logger.info("[PHASE2→3] using community picks as Tavily input: %s", effective_models)
+
+            # ── 5. 5-Phase Pipeline (all products go through same flow) ──────────
+            # Phase 3 Traffic Cop inside _run_product_pipeline routes:
+            #   • niche-tier domains + product URL → Lane A (curl_cffi + JSON-LD)
+            #   • enterprise/category/unknown URLs → Lane B (Gemini Search Grounding)
             ranked: list[dict] = []
-            global_niche = retailers_service.get_global_niche_domains()
-            if search_globally:
-                combined_niche: list[str] | None = global_niche or None
-            else:
-                combined_niche = list(dict.fromkeys(
-                    (niche_domains or []) + global_niche
-                )) or None
-
-            if combined_niche:
-                ranked = await _run_product_pipeline(
-                    deterministic_query, collected_params, city, country, combined_niche,
-                    excluded_urls or None, is_global=False,
-                    on_event=emit, user_language=detected_language,
-                    excluded_keywords=excluded_keywords or None,
-                    price_floor=price_floor,
-                    community_picks=community_picks or None,
-                    specific_models=specific_models,
-                    no_global_supplement=True,
-                )
-
             fallback_message: str | None = None
+
+            ranked = await _run_product_pipeline(
+                deterministic_query, collected_params, city, country, local_domains,
+                excluded_urls or None, is_global=search_globally,
+                on_event=emit, user_language=detected_language,
+                excluded_keywords=excluded_keywords or None,
+                price_floor=price_floor,
+                community_picks=community_picks or None,
+                specific_models=effective_models,
+            )
 
             # ── 7. No results path ───────────────────────────────────────────
             if not ranked:
