@@ -1065,7 +1065,14 @@ well below the budget ceiling — excellent value for the price.' Flag any missi
         )
         raw = getattr(response, "text", None) or ""
         logger.info("[SCORING] Gemini response: %d chars — first 400: %s", len(raw), raw[:400])
-        ranked = json.loads(raw).get("ranked_products", [])
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            # Truncate to last complete item and close the JSON structure
+            cut = raw.rfind("},")
+            raw = (raw[:cut + 1] if cut != -1 else raw).rstrip(", \n") + "]}"
+            parsed = json.loads(raw)
+        ranked = parsed.get("ranked_products", [])
         logger.info("[SCORING] parsed %d ranked_products", len(ranked))
     except errors.ServerError as exc:
         logger.warning("[SCORING] Gemini overloaded: %s", exc)
