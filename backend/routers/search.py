@@ -832,6 +832,15 @@ async def _run_product_pipeline(
     logger.info("[P5/GEMINI] returned %d ranked products", len(ranked))
 
     valid_urls = {r["url"] for r in contenders}
+
+    # Build URL → ground-truth title from actual scraped data (JSON-LD name wins).
+    # Overrides Gemini-hallucinated titles so the sanity check sees the real product name.
+    _contender_title: dict[str, str] = {}
+    for c in contenders:
+        t = (c.get("jsonld") or {}).get("name") or ""
+        if t:
+            _contender_title[c["url"]] = t
+
     before = len(ranked)
     ranked = [
         p for p in ranked
@@ -847,17 +856,25 @@ async def _run_product_pipeline(
             before - len(ranked), len(ranked),
         )
 
+    # Replace Gemini's title with the scraped JSON-LD name when available.
+    for p in ranked:
+        scraped_title = _contender_title.get(p.get("url", ""))
+        if scraped_title:
+            p["title"] = scraped_title
+
     # ── OpenAI sanity check: verify ranked products match the requested category ──
     # Guards against Gemini hallucinating the wrong product type (e.g. user asked
     # for bikes but results are cars) or returning category-page titles as products.
     # Only approved products survive; all-denied triggers the no-results path below.
+    # Pass only the category (not the full preference with spec requirements) so
+    # gpt-4o-mini checks product TYPE only — not specs like CPU model or RAM size.
     _sanity_denied_all = False
     if ranked:
         ranked = await run_in_threadpool(
             openai_router.sanity_check_products,
             ranked,
             params.category or "",
-            params.preference or None,
+            None,
         )
         if not ranked:
             logger.warning("[SANITY] all products denied — treating as no results")
