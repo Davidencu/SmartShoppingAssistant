@@ -688,91 +688,128 @@ async def _run_product_pipeline(
             s["title"] = url_to_title.get(s["url"], "")
         return results
 
-    # ── Phase 4B: Lane B — Gemini Search Grounding + Tavily snippets ─────────
+    # ── Phase 4B: Lane B — deterministic Tavily discovery + Gemini extraction ──
+    #
+    # Golden Rule: Tavily is for Discovery (finding guaranteed URLs).
+    #              Gemini is for Extraction (reading those URLs, never generating new ones).
+    #
+    # For mainstream domains (eMAG, Amazon, Decathlon…):
+    #   1. Tavily runs a targeted site:<domain> search → returns real PDP URLs from its index
+    #   2. Gemini reads each confirmed PDP URL and extracts name/price/stock (no URL generation)
+    # For non-mainstream heavy URLs that are already PDPs:
+    #   Use the Tavily snippet that Phase 1 already returned (no Gemini needed).
     async def _run_lane_b() -> list[dict]:
         if not heavy_urls:
             return []
         lane_b_records: list[dict] = []
         seen_urls: set[str] = set()
 
-        for url in heavy_urls[:6]:  # cap at 6 grounding calls per pipeline run
-            # ── Grounding: find specific in-stock products on this URL ──────
-            products = await run_in_threadpool(
-                gemini_service.read_heavy_url_with_grounding,
-                url,
-                params.budget_max,
-                params.budget_currency,
-                params.category or "",
-                user_language,
+        from services.scraper_service import is_likely_product_url, is_mainstream_domain
+
+        # ── Pass 1: non-mainstream heavy PDPs (Tavily snippet is sufficient) ──
+        mainstream_domains: list[str] = []
+        for url in heavy_urls:
+            url_domain = urlparse(url).netloc.removeprefix("www.")
+            if is_mainstream_domain(url_domain):
+                if url_domain not in mainstream_domains:
+                    mainstream_domains.append(url_domain)
+            else:
+                # Non-mainstream heavy URL: add if it's already a PDP with a snippet
+                tavily_snippet = url_to_content.get(url, "").strip()
+                if (
+                    tavily_snippet
+                    and url not in seen_urls
+                    and is_likely_product_url(url)
+                ):
+                    seen_urls.add(url)
+                    lane_b_records.append({
+                        "url": url,
+                        "title": url_to_title.get(url, ""),
+                        "markdown": tavily_snippet,
+                        "jsonld": {},
+                        "has_buy_button": False,
+                        "shipping_policy_url": None,
+                        "return_policy_text": None,
+                        "_lane": "B",
+                    })
+
+        # ── Pass 2: mainstream domains — Tavily discovers, Gemini reads ───────
+        # Strip the " buy" suffix for site: searches; prefer a specific model name
+        # so Tavily returns the actual product page rather than the category grid.
+        clean_query = query.removesuffix(" buy").strip()
+        effective_query = (specific_models[0] if specific_models else clean_query)
+
+        for domain in mainstream_domains[:4]:  # cap at 4 mainstream domains
+            # Step A: Tavily finds guaranteed PDP URLs on this specific domain
+            pdp_candidates = await run_in_threadpool(
+                tavily_service.search_pdps_for_domain,
+                effective_query,
+                domain,
+                5,
             )
-            grounding_added = 0
-            for p in products:
-                if not p.get("in_stock", True):
+
+            # Step B: hard-filter to confirmed product detail pages
+            pdp_urls = [
+                r["url"] for r in pdp_candidates
+                if (
+                    is_likely_product_url(r["url"])
+                    and r["url"] not in seen_urls
+                    and (not excluded_urls or r["url"] not in excluded_urls)
+                )
+            ]
+
+            if not pdp_urls:
+                logger.info("[LANE-B] Tavily found no PDPs for %s", domain)
+                continue
+
+            logger.info("[LANE-B] Tavily confirmed %d PDP(s) for %s", len(pdp_urls), domain)
+
+            # Step C: Gemini reads each confirmed URL — extraction only, no URL generation
+            for pdp_url in pdp_urls[:2]:  # top 2 per domain to cap API calls
+                product = await run_in_threadpool(
+                    gemini_service.extract_product_from_url,
+                    pdp_url,
+                    params.budget_max,
+                    params.budget_currency,
+                    params.category or "",
+                    user_language,
+                )
+
+                if not product:
+                    logger.info("[LANE-B] no data extracted from %s", pdp_url)
                     continue
-                if excluded_urls and p["url"] in excluded_urls:
-                    continue
-                if p["url"] in seen_urls:
-                    continue
-                seen_urls.add(p["url"])
-                name = p.get("name", "Unknown")
-                price = p.get("price", 0)
-                currency = p.get("currency") or params.budget_currency or "RON"
+
+                seen_urls.add(pdp_url)
+                name = product.get("name", "Unknown")
+                price = product.get("price", 0)
+                currency = product.get("currency") or params.budget_currency or "RON"
+                in_stock = product.get("in_stock", True)
+
                 md = (
                     f"{name}\n"
                     f"Price: {price} {currency}\n"
-                    f"Availability: In Stock\n"
+                    f"Availability: {'In Stock' if in_stock else 'Out of Stock'}\n"
                     f"Category: {params.category or ''}\n"
-                    f"Source URL: {url}\n"
-                    f"Product URL: {p['url']}\n"
-                    f"This product was found via Google Search Grounding on a category "
-                    f"page or major retailer. It is confirmed in stock and within budget "
-                    f"({params.budget_max} {params.budget_currency}).\n"
+                    f"Product URL: {pdp_url}\n"
+                    f"Confirmed via targeted Tavily search on {domain}.\n"
                 )
                 lane_b_records.append({
-                    "url": p["url"],
+                    "url": pdp_url,
                     "title": name,
                     "markdown": md,
                     "jsonld": {
                         "name": name,
                         "price": price,
                         "currency": currency,
-                        "availability": "In Stock",
-                        "image": p.get("image_url"),
+                        "availability": "In Stock" if in_stock else "Out of Stock",
+                        "image": product.get("image_url"),
                     },
-                    "has_buy_button": True,
+                    "has_buy_button": in_stock,
                     "shipping_policy_url": None,
                     "return_policy_text": None,
                     "_lane": "B",
                 })
-                grounding_added += 1
 
-            # ── Tavily baseline: use the snippet Tavily already returned ────
-            # Only add the original URL if it is a product-detail page.
-            # Category/search/listing URLs must not appear as final results —
-            # if grounding found nothing from them, we simply skip.
-            # Skip entirely for mainstream domains: Tavily can index a wrong URL with
-            # a mismatched product title (e.g. Lian Li case URL + Razer headset title),
-            # so for these sites we trust only what Gemini grounding explicitly returned.
-            from services.scraper_service import is_likely_product_url, is_mainstream_domain
-            url_domain = urlparse(url).netloc.removeprefix("www.")
-            tavily_snippet = url_to_content.get(url, "").strip()
-            if (
-                tavily_snippet
-                and url not in seen_urls
-                and is_likely_product_url(url)
-                and not is_mainstream_domain(url_domain)
-            ):
-                seen_urls.add(url)
-                lane_b_records.append({
-                    "url": url,
-                    "title": url_to_title.get(url, ""),
-                    "markdown": tavily_snippet,
-                    "jsonld": {},
-                    "has_buy_button": False,
-                    "shipping_policy_url": None,
-                    "return_policy_text": None,
-                    "_lane": "B",
-                })
         logger.info("[LANE-B] produced %d product records", len(lane_b_records))
         return lane_b_records
 

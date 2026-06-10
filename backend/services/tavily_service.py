@@ -82,6 +82,35 @@ _GLOBAL_ECOMMERCE_DOMAINS: list[str] = [
 ]
 
 
+def search_pdps_for_domain(
+    query: str,
+    domain: str,
+    max_results: int = 5,
+) -> list[dict]:
+    """
+    Targeted Tavily search to find product detail pages on a single mainstream domain.
+
+    Uses the site: operator in the query string so Tavily's index returns only pages
+    from that domain — the URLs are guaranteed to physically exist (no hallucination).
+    Called by Lane B before passing URLs to Gemini for extraction-only reading.
+
+    Runs synchronously — call via run_in_threadpool from async handlers.
+    """
+    site_query = f"site:{domain} {query}"
+    try:
+        result = _client.search(
+            query=site_query,
+            search_depth="advanced",
+            max_results=max_results,
+            include_answer=False,
+            include_domains=[domain],
+        )
+        return result.get("results", [])
+    except Exception as exc:
+        logger.error("[TAVILY] PDP search failed for %s: %s", domain, exc)
+        return []
+
+
 def search_products(
     query: str,
     max_results: int = 10,

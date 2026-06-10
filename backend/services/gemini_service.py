@@ -1290,6 +1290,89 @@ def research_community_picks(
     return {"recommendations": [], "insight": None}
 
 
+def extract_product_from_url(
+    url: str,
+    budget_max: Optional[float],
+    budget_currency: Optional[str],
+    category: str,
+    user_language: str = "English",
+) -> dict | None:
+    """
+    Lane B Extractor: given a guaranteed PDP URL discovered by Tavily, use Gemini's
+    Google Search Grounding to READ that specific page and return structured data.
+
+    Gemini's role is EXTRACTION ONLY — it cannot generate or modify URLs.
+    The URL is pinned to the caller's value regardless of what Gemini outputs,
+    which completely eliminates the 404 hallucination vector.
+
+    Returns dict {name, price, currency, url, in_stock, image_url} or None.
+    Runs synchronously — call via run_in_threadpool from async handlers.
+    """
+    budget_str = f"{budget_max} {budget_currency}" if budget_max else "any price"
+
+    prompt = (
+        f"You are a product data extractor with Google Search access.\n"
+        f"A user wants to buy a {category} with a budget of {budget_str}.\n\n"
+        f"Visit this EXACT URL and read the page:\n{url}\n\n"
+        f"Extract:\n"
+        f"1. Exact product name (title shown on the page)\n"
+        f"2. Price as a plain number (no currency symbols)\n"
+        f"3. Currency code (RON, EUR, USD, etc.)\n"
+        f"4. In-stock status — true if a buy/add-to-cart button is present, false if out of stock\n"
+        f"5. Main product image URL\n\n"
+        f"RULES:\n"
+        f"- 'url' in your response MUST be exactly: {url}\n"
+        f"  Copy it character-for-character. Do NOT generate or alter any URL.\n"
+        f"- If this page is a category list, search results, or error page: return null\n"
+        f"- If you cannot access the page: return null\n\n"
+        f"Return ONLY valid JSON (no markdown fences):\n"
+        f'{{"name":"exact title","price":0.0,"currency":"{budget_currency or "RON"}",'
+        f'"url":"{url}","in_stock":true,"image_url":null}}\n'
+        f"OR the single word: null"
+    )
+
+    try:
+        response = _with_backoff(
+            _client.models.generate_content,
+            model=_FLASH,
+            contents=[types.Content(role="user", parts=[types.Part(text=prompt)])],
+            config=types.GenerateContentConfig(
+                tools=[types.Tool(google_search=types.GoogleSearch())],
+                temperature=0.0,
+                max_output_tokens=512,
+                thinking_config=types.ThinkingConfig(thinking_budget=0),
+            ),
+        )
+        raw = (getattr(response, "text", None) or "").strip()
+        if not raw or raw.lower() == "null":
+            return None
+
+        matches = list(re.finditer(r"\{[^{}]+\}", raw, re.DOTALL))
+        for m in reversed(matches):
+            try:
+                data = json.loads(m.group())
+                returned_url = str(data.get("url") or "")
+                if returned_url != url:
+                    logger.warning(
+                        "[LANE-B] Gemini returned mutated URL (%s) — enforcing original (%s)",
+                        returned_url, url,
+                    )
+                return {
+                    "name": str(data.get("name") or "Unknown")[:200],
+                    "price": float(data.get("price") or 0),
+                    "currency": str(data.get("currency") or budget_currency or "RON"),
+                    "url": url,  # always the Tavily-sourced URL — never trust Gemini's version
+                    "in_stock": bool(data.get("in_stock", True)),
+                    "image_url": data.get("image_url"),
+                }
+            except (json.JSONDecodeError, ValueError):
+                continue
+    except Exception as exc:
+        logger.warning("[LANE-B] extract_product_from_url failed for %s: %s", url, exc)
+
+    return None
+
+
 def read_heavy_url_with_grounding(
     url: str,
     budget_max: Optional[float],
