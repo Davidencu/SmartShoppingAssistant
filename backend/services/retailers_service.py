@@ -230,7 +230,7 @@ _PROXY_FALLBACK: frozenset[str] = frozenset({
 # Update the DB instead of editing this list.
 _MAINSTREAM_FALLBACK: frozenset[str] = frozenset({
     # Romanian mainstream
-    "emag.ro", "altex.ro", "flanco.ro", "cel.ro", "elefant.ro", "dedeman.ro",
+    "emag.ro", "altex.ro", "flanco.ro", "cel.ro", "elefant.ro", "dedeman.ro", "pcgarage.ro",
     # Global mainstream (amazon.* handled by startswith check in is_mainstream_domain)
     "walmart.com", "bestbuy.com", "target.com",
 })
