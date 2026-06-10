@@ -1061,7 +1061,6 @@ well below the budget ceiling — excellent value for the price.' Flag any missi
                 response_mime_type="application/json",
                 temperature=0.1,
                 max_output_tokens=8192,
-                thinking_config=types.ThinkingConfig(thinking_budget=0),
             ),
         )
         raw = getattr(response, "text", None) or ""
