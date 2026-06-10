@@ -300,6 +300,8 @@ User message
 │  Output: top 3 ranked products with reasoning.     │
 │  value_score recomputed deterministically in       │
 │  Python; hallucinated URLs dropped.                │
+│  Groq (Llama 3.3-70B) activated automatically     │
+│  when Gemini returns 429/ServerError.              │
 │  Heuristic price-sort fallback when all AI         │
 │  scorers are unavailable.                          │
 │                                                     │
@@ -555,6 +557,23 @@ Before scoring, Gemini must find at least one purchasability signal from either 
 Pages where neither tier applies are eliminated — they are manufacturer spec sheets, blog posts, or out-of-stock placeholders.
 
 Lane B results have `has_buy_button: True` set by design — Gemini Grounding only returns confirmed in-stock products, so they skip the purchasability check.
+
+### Groq Circuit Breaker
+
+When Gemini returns `429 Too Many Requests` or `ServerError` after all retries, the scoring and intent calls automatically fall over to Groq:
+
+| Task | Groq model | Notes |
+|---|---|---|
+| Scoring | `llama-3.3-70b-versatile` | Receives a compact prompt (~6k tokens vs ~21k for Gemini) |
+| Intent classification | `llama-3.1-8b-instant` | Same JSON output schema as Gemini |
+
+**Compact scoring prompt (`_build_compact_scoring_prompt`):** Groq's free tier is capped at 12k tokens per minute. The compact prompt sends only the JSON-LD `facts_header` + product title per product — omitting full markdown, logistics context, and return policy text. The scored output format is identical so the same parsing code handles both.
+
+**Heuristic fallback:** If both Gemini and Groq are unavailable, the pipeline falls back to a simple price-sort: in-budget products first, ordered by ascending price, with a note that AI scoring was unavailable. Users still get ranked results rather than an error.
+
+The Groq client is optional. If `GROQ_API_KEY` is absent or the import fails, Groq is silently disabled.
+
+---
 
 ## Semantic Cache
 
@@ -1008,7 +1027,7 @@ SmartShoppingAssistant/
 - Python 3.12+, Node.js 20+
 - Supabase project with the `vector` extension enabled
 - API keys: Gemini, Tavily, OpenAI
-- Optional: IPRoyal residential proxy credentials
+- Optional: Groq API key (circuit breaker), IPRoyal residential proxy credentials
 
 ### Backend
 
