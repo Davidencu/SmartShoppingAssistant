@@ -19,6 +19,7 @@ _LOCK = threading.Lock()
 _domains_by_country: dict[str, list[str]] = {}
 _niche_domains_by_country: dict[str, list[str]] = {}
 _niche_domains_flat: frozenset[str] = frozenset()
+_mainstream_domains_flat: frozenset[str] = frozenset()
 _proxy_domains: frozenset[str] = frozenset()
 _last_refresh: float = 0.0
 _TTL = 300.0  # seconds
@@ -70,7 +71,7 @@ def country_name_to_iso(name: str) -> str:
 
 def _refresh() -> None:
     """Reload all active retailers from Supabase. Called when cache is stale."""
-    global _domains_by_country, _niche_domains_by_country, _niche_domains_flat, _proxy_domains, _last_refresh
+    global _domains_by_country, _niche_domains_by_country, _niche_domains_flat, _mainstream_domains_flat, _proxy_domains, _last_refresh
     try:
         from services.supabase_service import get_supabase_admin
         rows = (
@@ -84,23 +85,27 @@ def _refresh() -> None:
         by_country: dict[str, list[str]] = {}
         niche: dict[str, list[str]] = {}
         flat_niche: set[str] = set()
+        flat_mainstream: set[str] = set()
         proxy: set[str] = set()
         for row in rows:
             by_country.setdefault(row["target_country"], []).append(row["domain"])
             if row.get("tier") == "niche":
                 niche.setdefault(row["target_country"], []).append(row["domain"])
                 flat_niche.add(row["domain"])
+            elif row.get("tier") == "mainstream":
+                flat_mainstream.add(row["domain"])
             if row.get("requires_proxy"):
                 proxy.add(row["domain"])
         with _LOCK:
             _domains_by_country = by_country
             _niche_domains_by_country = niche
             _niche_domains_flat = frozenset(flat_niche)
+            _mainstream_domains_flat = frozenset(flat_mainstream)
             _proxy_domains = frozenset(proxy)
             _last_refresh = time.monotonic()
         logger.info(
-            "[RETAILERS] loaded %d active retailers (%d niche) from DB",
-            len(rows), sum(len(v) for v in niche.values()),
+            "[RETAILERS] loaded %d active retailers (%d niche, %d mainstream) from DB",
+            len(rows), sum(len(v) for v in niche.values()), len(flat_mainstream),
         )
     except Exception as exc:
         logger.warning("[RETAILERS] DB refresh failed (using cache/fallback): %s", exc)
@@ -181,6 +186,18 @@ def is_niche_domain(domain: str) -> bool:
     return _bare_domain(domain) in _niche_domains_flat
 
 
+def is_mainstream_domain(domain: str) -> bool:
+    """Return True when the domain has tier='mainstream' in supported_retailers.
+    Mainstream domains always go to Lane B (Gemini grounding) — scraping them is
+    unreliable due to heavy anti-bot measures and frequent Tavily title mismatches.
+    Falls back to _MAINSTREAM_FALLBACK when the DB has no mainstream rows yet."""
+    _ensure_fresh()
+    bare = _bare_domain(domain)
+    if _mainstream_domains_flat:
+        return bare in _mainstream_domains_flat or bare.startswith("amazon.")
+    return bare in _MAINSTREAM_FALLBACK or bare.startswith("amazon.")
+
+
 def requires_proxy(domain: str) -> bool:
     """Return True when this domain requires a residential proxy.
     Accepts a bare domain ('emag.ro') or a full URL ('https://www.emag.ro/…').
@@ -207,4 +224,13 @@ _PROXY_FALLBACK: frozenset[str] = frozenset({
     "amazon.se",     "amazon.ca",    "amazon.co.jp", "amazon.com.au",
     "amazon.com.br", "amazon.com.mx", "amazon.in",
     "walmart.com", "target.com",
+})
+
+# Hardcoded mainstream fallback — used when supported_retailers has no tier='mainstream' rows yet.
+# Update the DB instead of editing this list.
+_MAINSTREAM_FALLBACK: frozenset[str] = frozenset({
+    # Romanian mainstream
+    "emag.ro", "altex.ro", "flanco.ro", "cel.ro", "elefant.ro", "dedeman.ro", "pcgarage.ro",
+    # Global mainstream (amazon.* handled by startswith check in is_mainstream_domain)
+    "walmart.com", "bestbuy.com", "target.com",
 })

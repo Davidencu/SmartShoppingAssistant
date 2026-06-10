@@ -174,26 +174,12 @@ _proxy_required_domains: set[str] = set()
 
 _DB_CACHE_TTL_HOURS = 24
 
-# Mainstream retailers that must always go to Lane B (Gemini grounding), even if
-# their DB tier is 'niche'.  These high-traffic sites have frequent Tavily title/URL
-# mismatches (e.g. a Lian Li case URL returned with a Razer headset title), so
-# scraping the raw URL produces wrong results.  Grounding verifies the product first.
-_MAINSTREAM_DOMAINS: frozenset[str] = frozenset({
-    # Romanian mainstream
-    "emag.ro", "altex.ro", "flanco.ro", "cel.ro", "elefant.ro", "dedeman.ro",
-    # Global mainstream
-    "amazon.com", "amazon.de", "amazon.co.uk", "amazon.fr", "amazon.it",
-    "amazon.es", "amazon.pl", "amazon.nl", "amazon.se", "amazon.ca",
-    "amazon.com.au", "amazon.co.jp", "amazon.in",
-    "walmart.com", "bestbuy.com", "target.com",
-})
-
-
 def is_mainstream_domain(domain: str) -> bool:
     """Return True for large mainstream retailers that must use Gemini grounding (Lane B).
+    Delegates to retailers_service which reads tier='mainstream' from supported_retailers.
     Accepts bare domains ('cel.ro') or domains with www. prefix."""
-    bare = re.sub(r"^www\.", "", domain.lower().strip())
-    return bare in _MAINSTREAM_DOMAINS or bare.startswith("amazon.")
+    from services import retailers_service
+    return retailers_service.is_mainstream_domain(domain)
 
 
 def sort_urls_for_lanes(urls: list[str]) -> tuple[list[str], list[str]]:
