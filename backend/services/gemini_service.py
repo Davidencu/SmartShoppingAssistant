@@ -1302,23 +1302,28 @@ def read_heavy_url_with_grounding(
     Empty list on any failure or when no matching products are found.
     """
     budget_str = f"{budget_max} {budget_currency}" if budget_max else "any price"
+    parsed_domain = url.split("/")[2] if "//" in url else url.split("/")[0]
 
     prompt = (
-        f"You are a product research assistant with access to Google Search. "
-        f"Use Google Search to visit this URL and identify specific products currently in stock.\n\n"
-        f"URL: {url}\n"
-        f"Category: {category}\n"
-        f"Budget limit: {budget_str}\n\n"
-        f"Find up to 3 specific products from this page that are:\n"
-        f"1. Currently in stock\n"
-        f"2. Priced at or under {budget_str}\n\n"
+        f"You are a product research assistant with access to Google Search.\n"
+        f"A user wants to buy a **{category}** with a budget of {budget_str}.\n\n"
+        f"Target retailer: {parsed_domain}\n"
+        f"Hint URL (may be a category or search page — treat it as retailer context only, "
+        f"do NOT return this URL as a result): {url}\n\n"
+        f"Task: Use Google Search to find up to 3 specific **{category}** products "
+        f"sold by {parsed_domain} that are currently in stock and priced at or under {budget_str}.\n\n"
+        f"Each result URL MUST be a product detail page (PDP) — a page for one single product.\n"
+        f"✓ Good PDP examples: amazon.com/dp/B0BVWGKM6V, emag.ro/produs-name/pd/ABCDEF, "
+        f"mediamarkt.de/product/-name-1234567.html, bestbuy.com/site/product/1234567.p\n"
+        f"✗ Bad URLs (never return these): amazon.com/s?k=..., emag.ro/laptopuri/c, "
+        f"any URL with /search, /category, /c/, /s?, /filter, or /browse in the path\n\n"
         f"Return ONLY a raw JSON array (no markdown fences, no explanation):\n"
         f'[\n  {{"name": "exact product name", "price": 0.0, '
         f'"currency": "{budget_currency or "RON"}", '
-        f'"url": "direct product page URL", "in_stock": true, "image_url": null}}\n]\n\n'
+        f'"url": "direct product detail page URL", "in_stock": true, "image_url": null}}\n]\n\n'
         f"Rules:\n"
-        f"- Only include products with a real direct product-page URL (not a category URL)\n"
-        f"- Return [] if no matching in-stock products are found\n"
+        f"- Each url must be the page for exactly one product, not a list or category\n"
+        f"- Return [] if no matching in-stock products are found within budget\n"
         f"- Do NOT include any product priced above {budget_str}"
     )
 
@@ -1345,13 +1350,28 @@ def read_heavy_url_with_grounding(
                 products = json.loads(m.group())
                 if not isinstance(products, list):
                     continue
-                from services.scraper_service import is_likely_product_url
+                from services.scraper_service import is_likely_product_url, _CAT_PATH_RE, _CAT_PARAM_RE
                 valid: list[dict] = []
                 for p in products:
                     if not isinstance(p, dict):
                         continue
                     url_val = str(p.get("url") or "")
                     if not url_val.startswith("http"):
+                        continue
+                    # Hard-reject obvious category/search/listing URLs first.
+                    # _CAT_PATH_RE and _CAT_PARAM_RE catch /search, /category, ?q=, etc.
+                    if _CAT_PATH_RE.search(url_val) or _CAT_PARAM_RE.search(url_val):
+                        logger.info("[LANE-B] grounding returned category URL, skipping: %s", url_val)
+                        continue
+                    # Also reject bare domain roots and directory-style paths (trailing slash,
+                    # no numeric or slug identifier after the last real segment) — these are
+                    # retailer homepages or category hierarchies that slip through RULE 3.
+                    from urllib.parse import urlparse as _up
+                    _parsed = _up(url_val)
+                    _path = _parsed.path.rstrip("/")
+                    _segs = [s for s in _path.split("/") if s]
+                    if not _segs:
+                        logger.info("[LANE-B] grounding returned domain root, skipping: %s", url_val)
                         continue
                     if not is_likely_product_url(url_val):
                         logger.info("[LANE-B] grounding returned category URL, skipping: %s", url_val)
