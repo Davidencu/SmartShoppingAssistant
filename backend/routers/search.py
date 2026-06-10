@@ -750,9 +750,18 @@ async def _run_product_pipeline(
             # Only add the original URL if it is a product-detail page.
             # Category/search/listing URLs must not appear as final results —
             # if grounding found nothing from them, we simply skip.
-            from services.scraper_service import is_likely_product_url
+            # Skip entirely for mainstream domains: Tavily can index a wrong URL with
+            # a mismatched product title (e.g. Lian Li case URL + Razer headset title),
+            # so for these sites we trust only what Gemini grounding explicitly returned.
+            from services.scraper_service import is_likely_product_url, is_mainstream_domain
+            url_domain = urlparse(url).netloc.removeprefix("www.")
             tavily_snippet = url_to_content.get(url, "").strip()
-            if tavily_snippet and url not in seen_urls and is_likely_product_url(url):
+            if (
+                tavily_snippet
+                and url not in seen_urls
+                and is_likely_product_url(url)
+                and not is_mainstream_domain(url_domain)
+            ):
                 seen_urls.add(url)
                 lane_b_records.append({
                     "url": url,

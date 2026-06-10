@@ -174,14 +174,39 @@ _proxy_required_domains: set[str] = set()
 
 _DB_CACHE_TTL_HOURS = 24
 
+# Mainstream retailers that must always go to Lane B (Gemini grounding), even if
+# their DB tier is 'niche'.  These high-traffic sites have frequent Tavily title/URL
+# mismatches (e.g. a Lian Li case URL returned with a Razer headset title), so
+# scraping the raw URL produces wrong results.  Grounding verifies the product first.
+_MAINSTREAM_DOMAINS: frozenset[str] = frozenset({
+    # Romanian mainstream
+    "emag.ro", "altex.ro", "flanco.ro", "cel.ro", "elefant.ro", "dedeman.ro",
+    # Global mainstream
+    "amazon.com", "amazon.de", "amazon.co.uk", "amazon.fr", "amazon.it",
+    "amazon.es", "amazon.pl", "amazon.nl", "amazon.se", "amazon.ca",
+    "amazon.com.au", "amazon.co.jp", "amazon.in",
+    "walmart.com", "bestbuy.com", "target.com",
+})
+
+
+def is_mainstream_domain(domain: str) -> bool:
+    """Return True for large mainstream retailers that must use Gemini grounding (Lane B).
+    Accepts bare domains ('cel.ro') or domains with www. prefix."""
+    bare = re.sub(r"^www\.", "", domain.lower().strip())
+    return bare in _MAINSTREAM_DOMAINS or bare.startswith("amazon.")
+
+
 def sort_urls_for_lanes(urls: list[str]) -> tuple[list[str], list[str]]:
     """
     PHASE 3: The Traffic Cop
 
     Lane A — niche/specialty domains (tier='niche' in supported_retailers) AND
               confirmed product-detail pages: routed to curl_cffi + JSON-LD scraper.
-    Lane B — enterprise giants, category pages, unknown domains: routed to
-              Gemini Search Grounding.
+    Lane B — enterprise giants, category pages, unknown domains, AND all mainstream
+              retailers: routed to Gemini Search Grounding.
+
+    Mainstream domains are always forced to Lane B regardless of DB tier to avoid
+    scraping URLs that Tavily may have indexed with a mismatched title/product.
     """
     from services import retailers_service
     niche_urls: list[str] = []
@@ -189,7 +214,9 @@ def sort_urls_for_lanes(urls: list[str]) -> tuple[list[str], list[str]]:
 
     for url in urls:
         domain = _extract_domain(url)
-        if retailers_service.is_niche_domain(domain) and is_likely_product_url(url):
+        if is_mainstream_domain(domain):
+            heavy_urls.append(url)
+        elif retailers_service.is_niche_domain(domain) and is_likely_product_url(url):
             niche_urls.append(url)
         else:
             heavy_urls.append(url)
