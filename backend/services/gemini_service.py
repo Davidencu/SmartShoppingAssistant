@@ -23,23 +23,6 @@ _EMBED = "gemini-embedding-001"
 
 _BACKOFF_ATTEMPTS = 5
 
-# ── Groq circuit breaker ───────────────────────────────────────────────────
-# Activated when Gemini returns 429 / ServerError after all retries.
-# Uses Llama-3.3-70B for scoring (quality match) and Llama-3.1-8B for intent
-# (speed). Falls back gracefully when GROQ_API_KEY is not set.
-
-_groq_client = None
-try:
-    if settings.groq_api_key:
-        from groq import Groq as _Groq
-        _groq_client = _Groq(api_key=settings.groq_api_key)
-        logger.info("[GROQ] circuit breaker configured (Llama 3.3-70B)")
-except Exception as _groq_init_exc:
-    logger.warning("[GROQ] init failed: %s", _groq_init_exc)
-
-_GROQ_SCORE_MODEL = "llama-3.3-70b-versatile"
-_GROQ_INTENT_MODEL = "llama-3.1-8b-instant"
-
 
 def _with_backoff(fn, *args, **kwargs):
     """Call fn(*args, **kwargs) with exponential backoff on ServerError (1 s → 2 s → raise)."""
@@ -60,86 +43,6 @@ def _with_backoff(fn, *args, **kwargs):
 
 
 
-
-def _build_compact_scoring_prompt(
-    scraped_results: list[dict],
-    search_description: str,
-    budget_max: "Optional[float]",
-    budget_currency: "Optional[str]",
-    community_picks: list[str] | None = None,
-) -> str:
-    """
-    Compressed scoring prompt for the Groq circuit breaker (target <2k tokens).
-    Uses the markdown signal compressor to include key specs/ratings/buy-signals
-    while excluding navigation, SEO prose, and other noise.
-    Omits full logistics context and return policy to stay within Groq's free-tier TPM.
-    """
-    url_manifest = "\n".join(
-        f"  {i + 1}. {r['url']}" for i, r in enumerate(scraped_results)
-    )
-    budget_str = f"{budget_max} {budget_currency}" if budget_max else "not specified"
-    budget_120 = f"{int(budget_max * 1.2)} {budget_currency}" if budget_max else "not specified"
-
-    picks = [p for p in (community_picks or []) if p]
-    picks_note = (
-        f"Community picks (Reddit/forums): {', '.join(picks[:3])} — "
-        f"boost quality_confidence by up to 10 pts if title matches.\n\n"
-        if picks else ""
-    )
-
-    products_block = ""
-    for i, r in enumerate(scraped_results, 1):
-        jsonld = r.get("jsonld") or {}
-        name = (jsonld.get("name") or r.get("title") or "Unknown")[:80]
-        facts = build_facts_header(jsonld)
-        # 150-char signal snippet — enough for Groq to distinguish product type and quality
-        snippet = _compress_markdown(r.get("markdown") or "", max_chars=150)
-        products_block += (
-            f"\n## PRODUCT {i}\nTitle: {name}\nURL: {r['url']}\n"
-            f"{facts}"
-            f"{snippet}\n"
-        )
-
-    return (
-        f'Score these products for: "{search_description}"\n'
-        f"Budget ceiling: {budget_str} (hard limit: {budget_120})\n\n"
-        f"{picks_note}"
-        f"AUTHORISED URLs (copy verbatim):\n{url_manifest}\n"
-        f"{products_block}\n"
-        f"Rules: drop products over {budget_120} or with explicit out-of-stock signals. "
-        f"value_score = 0.40×cost_efficiency + 0.35×quality_confidence + 0.15×logistics + 0.10×trust. "
-        f"Return JSON only:\n"
-        f'{{"ranked_products": [{{"rank": 1, "title": "...", "url": "...", '
-        f'"price": 0.0, "currency": "...", "image_url": null, '
-        f'"scores": {{"cost_efficiency": 0, "quality_confidence": 0, "logistics": 0, "trust": 0}}, '
-        f'"value_score": 0.0, "reasoning": "1-2 sentences."}}]}}'
-    )
-
-
-def _groq_intent(system: str, messages) -> dict:
-    """
-    Groq fallback for classify_intent.
-    Converts Gemini Content objects to OpenAI-style messages and calls Llama 3.1-8B.
-    """
-    if not _groq_client:
-        return {}
-    try:
-        groq_msgs = [{"role": "system", "content": system}]
-        for msg in messages:
-            role = "user" if msg.role == "user" else "assistant"
-            groq_msgs.append({"role": role, "content": msg.content or ""})
-        resp = _groq_client.chat.completions.create(
-            model=_GROQ_INTENT_MODEL,
-            messages=groq_msgs,
-            response_format={"type": "json_object"},
-            temperature=0.1,
-            max_tokens=4096,
-        )
-        raw = resp.choices[0].message.content or ""
-        return json.loads(raw)
-    except Exception as exc:
-        logger.error("[GROQ] intent failed: %s", exc)
-        return {}
 
 # ── Markdown signal compressor ────────────────────────────────────────────────
 # Keeps only lines that carry numeric or purchase-related signals.
@@ -739,10 +642,7 @@ def classify_intent(messages, city: str = "", country: str = "") -> dict:
         raw_intent = getattr(response, "text", None) or ""
         return json.loads(raw_intent)
     except errors.ServerError:
-        logger.warning("[INTENT] Gemini overloaded — routing to Groq circuit breaker")
-        groq_result = _groq_intent(system, messages)
-        if groq_result:
-            return groq_result
+        logger.warning("[INTENT] Gemini overloaded — returning clarify fallback")
         _clarify_fallback["reply"] = (
             "The AI is temporarily experiencing high traffic. Please try your search again in a few seconds."
         )
@@ -751,9 +651,67 @@ def classify_intent(messages, city: str = "", country: str = "") -> dict:
         logger.warning("[INTENT] JSON parse failed — raw: %.200s", raw_intent)
         return _clarify_fallback
     except Exception as exc:
-        logger.warning("[INTENT] Gemini error — routing to Groq circuit breaker: %s", exc)
-        groq_result = _groq_intent(system, messages)
-        return groq_result if groq_result else _clarify_fallback
+        logger.warning("[INTENT] Gemini error — returning clarify fallback: %s", exc)
+        return _clarify_fallback
+
+
+def _salvage_ranked_products(raw: str) -> dict:
+    """
+    Best-effort recovery of a truncated scoring response.
+
+    Gemini occasionally returns JSON cut off mid-object when the output token
+    budget is exhausted. Rather than naively trimming at the last "}," — which
+    usually lands inside the nested "scores" object and produces invalid JSON —
+    this walks the "ranked_products" array brace-by-brace (string- and
+    escape-aware) and keeps only the product objects that are fully closed,
+    discarding any partial trailing object.
+
+    Returns {"ranked_products": [...]} with every complete object recovered,
+    or {"ranked_products": []} when nothing usable can be salvaged.
+    """
+    key_idx = raw.find('"ranked_products"')
+    if key_idx == -1:
+        return {"ranked_products": []}
+    arr_start = raw.find("[", key_idx)
+    if arr_start == -1:
+        return {"ranked_products": []}
+
+    objects: list[str] = []
+    depth = 0
+    obj_start = -1
+    in_string = False
+    escaped = False
+    for i in range(arr_start + 1, len(raw)):
+        ch = raw[i]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch == "{":
+            if depth == 0:
+                obj_start = i
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0 and obj_start != -1:
+                objects.append(raw[obj_start:i + 1])
+                obj_start = -1
+        elif ch == "]" and depth == 0:
+            break
+
+    recovered: list[dict] = []
+    for obj in objects:
+        try:
+            recovered.append(json.loads(obj))
+        except json.JSONDecodeError:
+            continue
+    return {"ranked_products": recovered}
 
 
 def score_and_rank_products(
@@ -1061,6 +1019,10 @@ well below the budget ceiling — excellent value for the price.' Flag any missi
                 response_mime_type="application/json",
                 temperature=0.1,
                 max_output_tokens=8192,
+                # Disable "thinking" — on gemini-2.5-flash thinking tokens are drawn
+                # from the same max_output_tokens budget, which truncated the JSON
+                # (incomplete-JSON errors, especially on Lane B's larger prompts).
+                thinking_config=types.ThinkingConfig(thinking_budget=0),
             ),
         )
         raw = getattr(response, "text", None) or ""
@@ -1068,10 +1030,9 @@ well below the budget ceiling — excellent value for the price.' Flag any missi
         try:
             parsed = json.loads(raw)
         except json.JSONDecodeError:
-            # Truncate to last complete item and close the JSON structure
-            cut = raw.rfind("},")
-            raw = (raw[:cut + 1] if cut != -1 else raw).rstrip(", \n") + "]}"
-            parsed = json.loads(raw)
+            # Response was cut off mid-object — recover every complete product.
+            logger.warning("[SCORING] response truncated — salvaging complete products")
+            parsed = _salvage_ranked_products(raw)
         ranked = parsed.get("ranked_products", [])
         logger.info("[SCORING] parsed %d ranked_products", len(ranked))
     except errors.ServerError as exc:

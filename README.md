@@ -62,7 +62,7 @@ SmartShop is a full-stack AI shopping assistant built around a simple idea: the 
 │  │  openai_router        gemini_service         tavily_service     │   │
 │  │  (gpt-4o-mini intent  (scoring, embeddings,  (product URL       │   │
 │  │   + is_mainstream;     research agent,         discovery)        │   │
-│  │   Gemini fallback)     Grounding, Groq CB)                      │   │
+│  │   Gemini fallback)     Grounding)                               │   │
 │  │                                                                 │   │
 │  │  scraper_service       retailers_service     jsonld_service     │   │
 │  │  (curl_cffi stealth    (DB-backed domain     (Schema.org        │   │
@@ -83,9 +83,9 @@ SmartShop is a full-stack AI shopping assistant built around a simple idea: the 
  │  (PostgreSQL +   │  │   Flash API      │  │  (advanced mode, │  │  (gpt-4o │
  │   pgvector)      │  │  (scoring,       │  │  optional domain │  │  -mini   │
  │                  │  │   research,      │  │  pinning)        │  │  intent  │
- │  profiles        │  │   grounding +    │  └──────────────────┘  │  router) │
- │  passkeys        │  │   Groq Llama     │                         └──────────┘
- │  search_cache    │  │   circuit breaker│
+ │  profiles        │  │   grounding,     │  └──────────────────┘  │  router) │
+ │  passkeys        │  │   embeddings)    │                         └──────────┘
+ │  search_cache    │  │                  │
  │  chat_history    │  └──────────────────┘
  │  supported_      │
  │  retailers       │
@@ -105,7 +105,6 @@ SmartShop is a full-stack AI shopping assistant built around a simple idea: the 
 | Database | Supabase (PostgreSQL + pgvector) |
 | AI — Intent Router | OpenAI `gpt-4o-mini` (zero-latency intent + mainstream detection; Gemini fallback) |
 | AI — Scoring & Grounding | Gemini 2.5 Flash (`gemini-2.5-flash`) |
-| AI — Circuit Breaker | Groq (`llama-3.3-70b-versatile` scoring, `llama-3.1-8b-instant` intent) |
 | AI — Embeddings | Gemini Embedding 001 (`gemini-embedding-001`, 768-dim) |
 | Web Search | Tavily (advanced search depth, optional domain filtering) |
 | Web Scraping | `curl_cffi` (6-profile Chrome/Edge stealth rotation) + lazy residential proxy (IPRoyal — direct-first, escalate on failure) + ghost layer (Google Cache/Archive) + `BeautifulSoup4` / `lxml` (JSON-LD + `__NEXT_DATA__` extraction) |
@@ -300,8 +299,8 @@ User message
 │  Output: top 3 ranked products with reasoning.     │
 │  value_score recomputed deterministically in       │
 │  Python; hallucinated URLs dropped.                │
-│  Groq (Llama 3.3-70B) activated automatically     │
-│  when Gemini returns 429/ServerError.              │
+│  Truncated scoring JSON is salvaged                │
+│  object-by-object (thinking disabled).             │
 │  Heuristic price-sort fallback when all AI         │
 │  scorers are unavailable.                          │
 │                                                     │
@@ -558,20 +557,11 @@ Pages where neither tier applies are eliminated — they are manufacturer spec s
 
 Lane B results have `has_buy_button: True` set by design — Gemini Grounding only returns confirmed in-stock products, so they skip the purchasability check.
 
-### Groq Circuit Breaker
+### Scoring Resilience
 
-When Gemini returns `429 Too Many Requests` or `ServerError` after all retries, the scoring and intent calls automatically fall over to Groq:
+The scoring call disables Gemini's "thinking" budget (`thinking_budget=0`) so the full `max_output_tokens` budget is available for the JSON answer — thinking tokens are otherwise drawn from the same budget and truncate the response. If a response is still cut off, `_salvage_ranked_products` walks the `ranked_products` array brace-by-brace (string- and escape-aware) and recovers every fully-closed product object, discarding the partial trailing one.
 
-| Task | Groq model | Notes |
-|---|---|---|
-| Scoring | `llama-3.3-70b-versatile` | Receives a compact prompt (~6k tokens vs ~21k for Gemini) |
-| Intent classification | `llama-3.1-8b-instant` | Same JSON output schema as Gemini |
-
-**Compact scoring prompt (`_build_compact_scoring_prompt`):** Groq's free tier is capped at 12k tokens per minute. The compact prompt sends only the JSON-LD `facts_header` + product title per product — omitting full markdown, logistics context, and return policy text. The scored output format is identical so the same parsing code handles both.
-
-**Heuristic fallback:** If both Gemini and Groq are unavailable, the pipeline falls back to a simple price-sort: in-budget products first, ordered by ascending price, with a note that AI scoring was unavailable. Users still get ranked results rather than an error.
-
-The Groq client is optional. If `GROQ_API_KEY` is absent or the import fails, Groq is silently disabled.
+**Heuristic fallback:** If Gemini scoring is unavailable, the pipeline falls back to a simple price-sort: in-budget products first, ordered by ascending price, with a note that AI scoring was unavailable. Users still get ranked results rather than an error.
 
 ---
 
@@ -955,8 +945,7 @@ SmartShoppingAssistant/
 │   │   │                              #   grounded), read_heavy_url_with_grounding
 │   │   │                              #   (Lane B Gemini Grounding),
 │   │   │                              #   extract_dynamic_logistics,
-│   │   │                              #   Groq circuit breaker (Llama 3.3-70B scoring
-│   │   │                              #   / Llama 3.1-8B intent), compact prompt builder
+│   │   │                              #   _salvage_ranked_products (truncation recovery)
 │   │   ├── tavily_service.py          # Product URL discovery
 │   │   ├── scraper_service.py         # Direct curl_cffi (lazy residential proxy
 │   │   │                              #   escalation) → ghost layer (Google Cache /
@@ -1027,7 +1016,7 @@ SmartShoppingAssistant/
 - Python 3.12+, Node.js 20+
 - Supabase project with the `vector` extension enabled
 - API keys: Gemini, Tavily, OpenAI
-- Optional: Groq API key (circuit breaker), IPRoyal residential proxy credentials
+- Optional: IPRoyal residential proxy credentials
 
 ### Backend
 
@@ -1071,10 +1060,6 @@ FRONTEND_ORIGIN=http://localhost:3000
 # When set, gpt-4o-mini handles intent classification + mainstream detection.
 # Falls back to Gemini classify_intent if absent or on failure.
 OPENAI_API_KEY=...
-
-# ── Groq circuit breaker (optional) ───────────────────────────────────────
-# When set, activates Llama 3.3-70B as a fallback when Gemini returns 429.
-GROQ_API_KEY=...
 
 # ── Residential proxy (optional) ─────────────────────────────────────────
 # When set, all curl_cffi sessions are routed through this proxy on block.
