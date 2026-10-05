@@ -19,7 +19,7 @@ import pytest
 # ── Allow running from the backend directory ──────────────────────────────────
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-# Load .env before importing the service so _init_cf_workers() sees the values.
+# Load .env before importing the service so _init_proxy() sees the values.
 try:
     from dotenv import load_dotenv
     load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env"))

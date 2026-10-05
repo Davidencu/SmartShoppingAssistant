@@ -29,7 +29,6 @@ import random
 import re
 import threading
 import time
-import urllib.parse
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
@@ -153,61 +152,8 @@ _proxy_password: str = ""
 _proxy_required_domains: set[str] = set()
 
 # ── Step 1: Supabase scrape cache (24 h TTL) ─────────────────────────────────
-# Persists across server restarts — the in-process LRU cache is cleared on
-# each Railway deploy.  Only called from executor threads (safe for sync I/O).
-#
-# Required Supabase tables (run once in the SQL editor):
-#
-#   CREATE TABLE IF NOT EXISTS scrape_cache (
-#     url                TEXT PRIMARY KEY,
-#     markdown           TEXT,
-#     jsonld             JSONB,
-#     shipping_policy_url TEXT,
-#     return_policy_text  TEXT,
-#     scraped_at         TIMESTAMPTZ DEFAULT NOW()
-#   );
-#
-#   CREATE TABLE IF NOT EXISTS hostile_domains (
-#     domain     TEXT PRIMARY KEY,
-#     flagged_at TIMESTAMPTZ DEFAULT NOW()
-#   );
 
 _DB_CACHE_TTL_HOURS = 24
-
-def is_mainstream_domain(domain: str) -> bool:
-    """Return True for large mainstream retailers that must use Gemini grounding (Lane B).
-    Delegates to retailers_service which reads tier='mainstream' from supported_retailers.
-    Accepts bare domains ('cel.ro') or domains with www. prefix."""
-    from services import retailers_service
-    return retailers_service.is_mainstream_domain(domain)
-
-
-def sort_urls_for_lanes(urls: list[str]) -> tuple[list[str], list[str]]:
-    """
-    PHASE 3: The Traffic Cop
-
-    Lane A — niche/specialty domains (tier='niche' in supported_retailers) AND
-              confirmed product-detail pages: routed to curl_cffi + JSON-LD scraper.
-    Lane B — enterprise giants, category pages, unknown domains, AND all mainstream
-              retailers: routed to Gemini Search Grounding.
-
-    Mainstream domains are always forced to Lane B regardless of DB tier to avoid
-    scraping URLs that Tavily may have indexed with a mismatched title/product.
-    """
-    from services import retailers_service
-    niche_urls: list[str] = []
-    heavy_urls: list[str] = []
-
-    for url in urls:
-        domain = _extract_domain(url)
-        if is_mainstream_domain(domain):
-            heavy_urls.append(url)
-        elif retailers_service.is_niche_domain(domain) and is_likely_product_url(url):
-            niche_urls.append(url)
-        else:
-            heavy_urls.append(url)
-
-    return niche_urls, heavy_urls
 
 def _db_cache_get(url: str) -> dict | None:
     """
@@ -527,6 +473,40 @@ _scraped_bloom = BloomFilter(capacity=100_000, error_rate=0.01)
 # URL scrape-result cache: at most 2000 pages (~20–100 KB each) in RAM
 _url_cache = _LRUCache(maxsize=2_000)
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 # Per-domain policy cache: domain → {"shipping_url": str|None, "return_text": str|None}
 _policy_cache: dict[str, dict] = {}
 
@@ -666,7 +646,7 @@ _SKU_RE = re.compile(
 _CMS_PRODUCT_PATH_RE = re.compile(
     r"(?:"
     r"/(?:products?|items?|pd|pdp|dp)/[^/\s?#]+"
-    r"|/p/(?:\d{4,}|[A-Z][A-Z0-9]*)"
+    r"|/p/\d{4,}"
     r")(?:/|$|\?)",
     re.IGNORECASE,
 )
@@ -726,17 +706,14 @@ def is_likely_product_url(url: str) -> bool:
         depth = len(segments)
 
         if depth == 0:
-            logger.debug("[GATEKEEPER] Blocked (no path): %s", url)
             return False
 
         # Block app-store and platform-download hosts — no buyable products.
         if any(host == junk or host.endswith("." + junk) for junk in _JUNK_HOSTS):
-            logger.debug("[GATEKEEPER] Blocked (junk host): %s", url)
             return False
 
         # Block non-HTML documents (PDFs, firmware zips, images, etc.).
         if _JUNK_EXTENSIONS_RE.search(path):
-            logger.debug("[GATEKEEPER] Blocked (junk extension): %s", url)
             return False
 
         # RULE 0: CMS product path prefix — evaluated before the negative filter.
@@ -753,7 +730,6 @@ def is_likely_product_url(url: str) -> bool:
         # numeric IDs — e.g. eMAG /filter/...v-12746936/c would otherwise
         # be rescued by the SKU pattern below.
         if _CAT_PATH_RE.search(url) or _CAT_PARAM_RE.search(url):
-            logger.debug("[GATEKEEPER] Blocked (category/search path): %s", url)
             return False
 
         # RULE 2: SKU Rescue — only for URLs that already passed the negative filter.
@@ -795,11 +771,9 @@ def is_likely_product_url(url: str) -> bool:
                 logger.info("[GATEKEEPER] Allowed via long multi-word slug: %s", url)
                 return True
 
-        logger.debug("[GATEKEEPER] Blocked (no rules matched): %s", url)
         return False
-    except Exception as exc:
-        logger.warning("[GATEKEEPER] URL parse error, dropping: %s — %s", url, exc)
-        return False
+    except Exception:
+        return True
 
 
 def is_cloudflare_challenge(html_content: str, status_code: int) -> bool:
@@ -1033,19 +1007,13 @@ def fetch_via_residential_proxy(target_url: str, target_country: str) -> str | N
             )
         if resp.status_code == 200:
             return resp.text
-        if resp.status_code == 407:
-            logger.error(
-                "[PROXY] HTTP 407 Proxy Auth Failed for %s — check proxy credentials",
-                target_url,
-            )
-        else:
-            logger.debug(
-                "[PROXY] country-%s returned HTTP %d for %s",
-                target_country, resp.status_code, target_url,
-            )
+        logger.debug(
+            "[PROXY] country-%s returned HTTP %d for %s",
+            target_country, resp.status_code, target_url,
+        )
         return None
     except Exception as exc:
-        logger.error("[PROXY] network error for %s: %s", target_url, repr(exc))
+        logger.error("[PROXY FATAL ERROR] %s", repr(exc))
         return None
 
 
@@ -1300,14 +1268,10 @@ class ScraperScheduler:
                 if not future.done():
                     future.set_result(result)
 
-            except asyncio.TimeoutError:
-                logger.warning("[SCHEDULER] timeout for %s", url)
-                if not future.done():
-                    future.set_result({"url": url, "markdown": "", "jsonld": {}, "_timeout": True, "_blocked": True})
             except Exception as exc:
                 logger.warning("[SCHEDULER] worker error for %s: %s", url, exc)
                 if not future.done():
-                    future.set_result({"url": url, "markdown": "", "jsonld": {}, "_error": str(exc), "_blocked": True})
+                    future.set_result({"url": url, "markdown": "", "jsonld": {}})
             finally:
                 self._queue.task_done()
 
@@ -1335,8 +1299,6 @@ class ScraperScheduler:
         await self._queue.put((priority, self._seq, url, future))
         return future
 
-    def queue_size(self) -> int:
-        return self._queue.qsize()
 
 
 # Module-level scheduler — workers start lazily on first request.

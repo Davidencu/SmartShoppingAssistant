@@ -797,6 +797,11 @@ class TestGlobalFallback:
                 "local_domains": ["emag.ro", "altex.ro"],
             },
         )
+        # Skip the niche-first pass so the pipeline runs exactly two passes
+        # (local mainstream → global), matching the two-element side_effects below.
+        mocker.patch(
+            "services.retailers_service.get_global_niche_domains", return_value=[]
+        )
 
     def _setup_local_fail_global_success(self, mocker):
         self._mock_search_intent_with_domains(mocker)

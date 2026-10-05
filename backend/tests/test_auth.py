@@ -307,3 +307,36 @@ class TestPasskeyVerify:
         )
         assert resp.status_code == 200
         assert "token" in resp.json()
+
+
+class TestAdminClearCache:
+    """/search/admin/clear-cache must be restricted to ADMIN_EMAILS."""
+
+    URL = "/search/admin/clear-cache"
+
+    def test_requires_auth(self, client):
+        resp = client.post(self.URL)
+        assert resp.status_code in (401, 403)
+
+    def test_regular_user_forbidden(self, client, auth_token, mocker):
+        mocker.patch("core.config.settings.admin_emails", "admin@example.com")
+        clear = mocker.patch("services.cache_service.clear_all_caches")
+        resp = client.post(self.URL, headers={"Authorization": f"Bearer {auth_token}"})
+        assert resp.status_code == 403
+        clear.assert_not_called()
+
+    def test_locked_when_no_admins_configured(self, client, auth_token, mocker):
+        mocker.patch("core.config.settings.admin_emails", "")
+        clear = mocker.patch("services.cache_service.clear_all_caches")
+        resp = client.post(self.URL, headers={"Authorization": f"Bearer {auth_token}"})
+        assert resp.status_code == 403
+        clear.assert_not_called()
+
+    def test_admin_allowed_case_insensitive(self, client, auth_token, mocker):
+        # auth_token belongs to test@example.com
+        mocker.patch("core.config.settings.admin_emails", "other@example.com, TEST@example.com")
+        clear = mocker.patch("services.cache_service.clear_all_caches", return_value={"ok": 1})
+        resp = client.post(self.URL, headers={"Authorization": f"Bearer {auth_token}"})
+        assert resp.status_code == 200
+        assert resp.json() == {"cleared": True, "summary": {"ok": 1}}
+        clear.assert_called_once()

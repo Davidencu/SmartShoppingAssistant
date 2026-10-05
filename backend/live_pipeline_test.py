@@ -217,7 +217,6 @@ async def run_pipeline(
     print(f"  local_domains       : {intent_data.get('local_domains')}")
     print(f"  search_globally     : {intent_data.get('search_globally')}")
     print(f"  is_refinement       : {intent_data.get('is_refinement')}")
-    print(f"  is_mainstream       : {intent_data.get('is_mainstream')}")
 
     if intent_data.get("intent") in ("CHAT", "CLARIFY"):
         print("\n  → Pipeline halted at CLARIFY/CHAT intent.")

@@ -74,6 +74,14 @@ def get_current_user(
         raise HTTPException(status_code=401, detail="Invalid or expired token")
 
 
+def require_admin(current_user: dict = Depends(get_current_user)) -> dict:
+    """Allow only users whose email is listed in ADMIN_EMAILS (case-insensitive)."""
+    admins = {e.strip().lower() for e in settings.admin_emails.split(",") if e.strip()}
+    if (current_user.get("email") or "").lower() not in admins:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return current_user
+
+
 @router.post("/check-email")
 async def check_email(req: EmailCheckRequest):
     supabase = get_supabase_admin()

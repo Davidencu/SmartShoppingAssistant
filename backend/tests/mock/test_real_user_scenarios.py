@@ -62,21 +62,21 @@ def _rich_markdown(title: str, price: float, currency: str) -> str:
     )
 
 
-def _mock_full_pipeline(mocker, intent_payload, products):
+def _mock_full_pipeline(mocker, intent_payload, products, real_scoring=False):
+    """
+    Mock every external call in the search pipeline.
+
+    real_scoring=False: score_and_rank_products itself is mocked to return `products`.
+    real_scoring=True:  only the raw Gemini call is mocked. It returns `products`
+                        reversed with value_score=0, so the real Python recompute,
+                        sort and rank-reassignment decide the final order.
+    """
     mocker.patch("services.openai_router.classify_intent_and_route", return_value=intent_payload)
     mocker.patch("services.gemini_service.classify_intent", return_value=intent_payload)
     mocker.patch("services.gemini_service.generate_embedding", return_value=[0.1] * 768)
     mocker.patch(
         "services.gemini_service.research_community_picks",
         return_value={"recommendations": [], "insight": None},
-    )
-    # Route all test URLs to Lane A (scraper) so scrape_urls mock is used.
-    mocker.patch(
-        "services.scraper_service.sort_urls_for_lanes",
-        side_effect=lambda urls: (urls, []),
-    )
-    mocker.patch(
-        "services.gemini_service.read_heavy_url_with_grounding", return_value=[]
     )
     mocker.patch("services.cache_service.lookup_cache", return_value=None)
     mocker.patch("services.tavily_service.search_products", return_value=[
@@ -86,7 +86,16 @@ def _mock_full_pipeline(mocker, intent_payload, products):
         {"url": p["url"], "markdown": _rich_markdown(p["title"], p["price"], p["currency"])}
         for p in products
     ]))
-    mocker.patch("services.gemini_service.score_and_rank_products", return_value=products)
+    if real_scoring:
+        scrambled = [dict(p, value_score=0.0) for p in reversed(products)]
+        gemini_resp = MagicMock()
+        gemini_resp.text = json.dumps({"ranked_products": scrambled})
+        mocker.patch(
+            "services.gemini_service._client.models.generate_content",
+            return_value=gemini_resp,
+        )
+    else:
+        mocker.patch("services.gemini_service.score_and_rank_products", return_value=products)
     mocker.patch("services.cache_service.save_cache")
 
 
@@ -328,17 +337,18 @@ class TestCommonProductRequests:
     def test_sony_headphones_noise_cancelling_under_1500_ron(self, client, mock_supabase, auth_token, mocker):
         """User: 'Sony WH-1000XM5 noise cancelling under 1500 RON'"""
         # XM4 at 899 RON is well under budget: cost_eff=100 gives it the highest value_score.
-        # Products are pre-sorted by value_score (as score_and_rank_products would do).
+        # Real scoring runs; "Gemini" returns these in reverse order with value_score=0.
         headphones = [
             _product(1, "Sony WH-1000XM4",      "https://altex.ro/xm4",   899, "RON", 100, 88, 85, 97),
             _product(2, "Sony WH-1000XM5",      "https://emag.ro/xm5",   1299, "RON",  88, 95, 85, 98),
-            _product(3, "Bose QuietComfort 45", "https://flanco.ro/bose", 1399, "RON",  72, 92, 80, 95),
+            _product(3, "Bose QuietComfort 45", "https://flanco.ro/bose-qc45", 1399, "RON",  72, 92, 80, 95),
         ]
         _mock_full_pipeline(
             mocker,
             _search_intent("Headphones", "under 1500 RON", 1500.0, "RON", "Sony WH-1000XM5 noise cancelling",
                            ["altex.ro", "emag.ro", "flanco.ro"]),
             headphones,
+            real_scoring=True,
         )
         resp = client.post(
             CHAT_URL,
@@ -349,24 +359,28 @@ class TestCommonProductRequests:
         data = sse_result(resp)
         assert data["intent"] == "SEARCH"
         products = data["products"]
-        # XM4 at 899 RON (well under budget) ranks first due to high cost_efficiency
-        assert products[0]["title"] == "Sony WH-1000XM4"
-        assert products[0]["scores"]["cost_efficiency"] == 100
+        # Expected value_scores: XM4 93.25, XM5 91.0, Bose 82.5
+        assert [p["title"] for p in products] == [
+            "Sony WH-1000XM4", "Sony WH-1000XM5", "Bose QuietComfort 45",
+        ]
+        assert products[0]["value_score"] == _value_score(100, 88, 85, 97)
+        assert [p["rank"] for p in products] == [1, 2, 3]
 
     def test_asus_gaming_laptop_under_4000_ron(self, client, mock_supabase, auth_token, mocker):
         """User: 'ASUS gaming laptop 16GB RAM under 4000 RON'"""
         # TUF (90 cost_eff, 85 quality) beats ROG Strix (78, 94) because the price advantage
         # (cost_efficiency weight 40%) outweighs the quality gap on this balanced comparison.
-        # Products are pre-sorted by value_score, as score_and_rank_products would return them.
+        # Real scoring runs; "Gemini" returns these in reverse order with value_score=0.
         laptops = [
-            _product(1, "ASUS TUF Gaming F15",   "https://altex.ro/tuf", 2999, "RON", 90, 85, 85, 94),
-            _product(2, "ASUS ROG Strix G15",    "https://emag.ro/rog",  3799, "RON", 78, 94, 85, 95),
-            _product(3, "ASUS VivoBook Pro 15", "https://emag.ro/vivo",  2499, "RON", 95, 78, 80, 90),
+            _product(1, "ASUS TUF Gaming F15",   "https://altex.ro/tuf-f15-123456", 2999, "RON", 90, 85, 85, 94),
+            _product(2, "ASUS ROG Strix G15",    "https://emag.ro/rog-g15-234567",  3799, "RON", 78, 94, 85, 95),
+            _product(3, "ASUS VivoBook Pro 15", "https://emag.ro/vivo-pro15-345678",  2499, "RON", 95, 78, 80, 90),
         ]
         _mock_full_pipeline(
             mocker,
             _search_intent("Gaming Laptop", "under 4000 RON", 4000.0, "RON", "ASUS 16GB RAM gaming", ["emag.ro", "altex.ro"]),
             laptops,
+            real_scoring=True,
         )
         resp = client.post(
             CHAT_URL,
@@ -376,9 +390,11 @@ class TestCommonProductRequests:
         assert resp.status_code == 200
         products = sse_result(resp)["products"]
         assert len(products) == 3
-        # The most expensive option (ROG Strix at 3799) should not rank first
-        assert products[0]["title"] != "ASUS ROG Strix G15"
-        assert products[0]["value_score"] >= products[-1]["value_score"]
+        # Expected value_scores: TUF 87.9, ROG 86.35, VivoBook 86.3
+        assert products[0]["title"] == "ASUS TUF Gaming F15"
+        scores = [p["value_score"] for p in products]
+        assert scores == sorted(scores, reverse=True)
+        assert [p["rank"] for p in products] == [1, 2, 3]
 
     def test_trek_mountain_bike_for_adults_under_2500_ron(self, client, mock_supabase, auth_token, mocker):
         """User: 'Trek mountain bike for adults under 2500 RON'"""
@@ -686,9 +702,9 @@ class TestMultiTurnConversation:
         assert data["collected_params"]["preference"] == "ASUS brand"
 
         laptops = [
-            _product(1, "ASUS ROG Strix G15",  "https://emag.ro/rog",  2999, "RON", 90, 92, 85, 95),
-            _product(2, "ASUS TUF Gaming F15", "https://altex.ro/tuf", 2499, "RON", 95, 85, 82, 94),
-            _product(3, "ASUS VivoBook Pro",   "https://emag.ro/vivo", 1999, "RON", 100, 75, 78, 90),
+            _product(1, "ASUS ROG Strix G15",  "https://emag.ro/rog-g15-234567",  2999, "RON", 90, 92, 85, 95),
+            _product(2, "ASUS TUF Gaming F15", "https://altex.ro/tuf-f15-123456", 2499, "RON", 95, 85, 82, 94),
+            _product(3, "ASUS VivoBook Pro",   "https://emag.ro/vivo-pro15-345678", 1999, "RON", 100, 75, 78, 90),
         ]
         _mock_full_pipeline(
             mocker,
@@ -830,21 +846,16 @@ class TestLocationFromSupabase:
             "services.gemini_service.research_community_picks",
             return_value={"recommendations": [], "insight": None},
         )
-        mocker.patch(
-            "services.scraper_service.sort_urls_for_lanes",
-            side_effect=lambda urls: (urls, []),
-        )
-        mocker.patch("services.gemini_service.read_heavy_url_with_grounding", return_value=[])
         mocker.patch("services.cache_service.lookup_cache", return_value=None)
         mocker.patch("services.tavily_service.search_products", return_value=[
-            {"url": "https://emag.ro/asus", "title": "ASUS Laptop"}
+            {"url": "https://emag.ro/asus-vivobook-123456", "title": "ASUS Laptop"}
         ])
         mocker.patch("services.scraper_service.scrape_urls", new=AsyncMock(return_value=[
-            {"url": "https://emag.ro/asus", "markdown": _rich_markdown("ASUS Laptop", 1799, "RON")}
+            {"url": "https://emag.ro/asus-vivobook-123456", "markdown": _rich_markdown("ASUS Laptop", 1799, "RON")}
         ]))
 
         score_mock = mocker.patch("services.gemini_service.score_and_rank_products", return_value=[
-            _product(1, "ASUS Laptop", "https://emag.ro/asus", 1799, "RON", 88, 82, 82, 90)
+            _product(1, "ASUS Laptop", "https://emag.ro/asus-vivobook-123456", 1799, "RON", 88, 82, 82, 90)
         ])
         mocker.patch("services.cache_service.save_cache")
 

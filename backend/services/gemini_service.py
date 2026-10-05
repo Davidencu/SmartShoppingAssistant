@@ -12,7 +12,6 @@ from pydantic import BaseModel
 
 from core.config import settings
 from services.jsonld_service import build_facts_header
-import asyncio
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +20,7 @@ _client = genai.Client(api_key=settings.gemini_api_key)
 _FLASH = "gemini-2.5-flash"
 _EMBED = "gemini-embedding-001"
 
-_BACKOFF_ATTEMPTS = 5
+_BACKOFF_ATTEMPTS = 3
 
 
 def _with_backoff(fn, *args, **kwargs):
@@ -30,7 +29,7 @@ def _with_backoff(fn, *args, **kwargs):
     for attempt in range(_BACKOFF_ATTEMPTS):
         try:
             return fn(*args, **kwargs)
-        except errors.ServerError as exc:
+        except errors.ServerError:
             if attempt == _BACKOFF_ATTEMPTS - 1:
                 raise
             logger.warning(
@@ -41,7 +40,68 @@ def _with_backoff(fn, *args, **kwargs):
             delay *= 2
 
 
+def _openai_score(prompt: str) -> list[dict]:
+    """
+    OpenAI fallback for score_and_rank_products, used when Gemini fails.
+    Imported lazily: openai_router imports this module at load time.
+    """
+    from services import openai_router
+    return openai_router.score_products(prompt)
 
+
+def _build_compact_scoring_prompt(
+    scraped_results: list[dict],
+    search_description: str,
+    budget_max: "Optional[float]",
+    budget_currency: "Optional[str]",
+    community_picks: list[str] | None = None,
+) -> str:
+    """
+    Compressed scoring prompt for the OpenAI fallback scorer (target <2k tokens).
+    Uses the markdown signal compressor to include key specs/ratings/buy-signals
+    while excluding navigation, SEO prose, and other noise.
+    Omits full logistics context and return policy to keep the fallback cheap and fast.
+    """
+    url_manifest = "\n".join(
+        f"  {i + 1}. {r['url']}" for i, r in enumerate(scraped_results)
+    )
+    budget_str = f"{budget_max} {budget_currency}" if budget_max else "not specified"
+    budget_120 = f"{int(budget_max * 1.2)} {budget_currency}" if budget_max else "not specified"
+
+    picks = [p for p in (community_picks or []) if p]
+    picks_note = (
+        f"Community picks (Reddit/forums): {', '.join(picks[:3])} — "
+        f"boost quality_confidence by up to 10 pts if title matches.\n\n"
+        if picks else ""
+    )
+
+    products_block = ""
+    for i, r in enumerate(scraped_results, 1):
+        jsonld = r.get("jsonld") or {}
+        name = (jsonld.get("name") or r.get("title") or "Unknown")[:80]
+        facts = build_facts_header(jsonld)
+        # 150-char signal snippet — enough to distinguish product type and quality
+        snippet = _compress_markdown(r.get("markdown") or "", max_chars=150)
+        products_block += (
+            f"\n## PRODUCT {i}\nTitle: {name}\nURL: {r['url']}\n"
+            f"{facts}"
+            f"{snippet}\n"
+        )
+
+    return (
+        f'Score these products for: "{search_description}"\n'
+        f"Budget ceiling: {budget_str} (hard limit: {budget_120})\n\n"
+        f"{picks_note}"
+        f"AUTHORISED URLs (copy verbatim):\n{url_manifest}\n"
+        f"{products_block}\n"
+        f"Rules: drop products over {budget_120} or with explicit out-of-stock signals. "
+        f"value_score = 0.40×cost_efficiency + 0.35×quality_confidence + 0.15×logistics + 0.10×trust. "
+        f"Return JSON only:\n"
+        f'{{"ranked_products": [{{"rank": 1, "title": "...", "url": "...", '
+        f'"price": 0.0, "currency": "...", "image_url": null, '
+        f'"scores": {{"cost_efficiency": 0, "quality_confidence": 0, "logistics": 0, "trust": 0}}, '
+        f'"value_score": 0.0, "reasoning": "1-2 sentences."}}]}}'
+    )
 
 
 # ── Markdown signal compressor ────────────────────────────────────────────────
@@ -641,8 +701,10 @@ def classify_intent(messages, city: str = "", country: str = "") -> dict:
         )
         raw_intent = getattr(response, "text", None) or ""
         return json.loads(raw_intent)
+    # This function is the fallback for openai_router, so there is no further
+    # model to try — degrade to a CLARIFY reply instead.
     except errors.ServerError:
-        logger.warning("[INTENT] Gemini overloaded — returning clarify fallback")
+        logger.warning("[INTENT] Gemini overloaded — returning CLARIFY fallback")
         _clarify_fallback["reply"] = (
             "The AI is temporarily experiencing high traffic. Please try your search again in a few seconds."
         )
@@ -651,67 +713,8 @@ def classify_intent(messages, city: str = "", country: str = "") -> dict:
         logger.warning("[INTENT] JSON parse failed — raw: %.200s", raw_intent)
         return _clarify_fallback
     except Exception as exc:
-        logger.warning("[INTENT] Gemini error — returning clarify fallback: %s", exc)
+        logger.warning("[INTENT] Gemini error — returning CLARIFY fallback: %s", exc)
         return _clarify_fallback
-
-
-def _salvage_ranked_products(raw: str) -> dict:
-    """
-    Best-effort recovery of a truncated scoring response.
-
-    Gemini occasionally returns JSON cut off mid-object when the output token
-    budget is exhausted. Rather than naively trimming at the last "}," — which
-    usually lands inside the nested "scores" object and produces invalid JSON —
-    this walks the "ranked_products" array brace-by-brace (string- and
-    escape-aware) and keeps only the product objects that are fully closed,
-    discarding any partial trailing object.
-
-    Returns {"ranked_products": [...]} with every complete object recovered,
-    or {"ranked_products": []} when nothing usable can be salvaged.
-    """
-    key_idx = raw.find('"ranked_products"')
-    if key_idx == -1:
-        return {"ranked_products": []}
-    arr_start = raw.find("[", key_idx)
-    if arr_start == -1:
-        return {"ranked_products": []}
-
-    objects: list[str] = []
-    depth = 0
-    obj_start = -1
-    in_string = False
-    escaped = False
-    for i in range(arr_start + 1, len(raw)):
-        ch = raw[i]
-        if in_string:
-            if escaped:
-                escaped = False
-            elif ch == "\\":
-                escaped = True
-            elif ch == '"':
-                in_string = False
-            continue
-        if ch == '"':
-            in_string = True
-        elif ch == "{":
-            if depth == 0:
-                obj_start = i
-            depth += 1
-        elif ch == "}":
-            depth -= 1
-            if depth == 0 and obj_start != -1:
-                objects.append(raw[obj_start:i + 1])
-                obj_start = -1
-        elif ch == "]" and depth == 0:
-            break
-
-    recovered: list[dict] = []
-    for obj in objects:
-        try:
-            recovered.append(json.loads(obj))
-        except json.JSONDecodeError:
-            continue
-    return {"ranked_products": recovered}
 
 
 def score_and_rank_products(
@@ -815,28 +818,18 @@ If you cannot determine the exchange rate at all, assign cost_efficiency=40 and 
             f"Each product may include a '### VENDOR LOGISTICS CONTEXT' block above its page text.\n"
             f"When that block is present, its '→ LOGISTICS SCORE GUIDANCE' line gives you the\n"
             f"correct score band — use it directly. Do NOT override it with page-text guesses.\n"
-            f"When no context block is present, FIRST apply your knowledge of the retailer's\n"
-            f"typical delivery speed for {location_str} before falling back to the rubric below.\n"
-            f"Examples of retailer knowledge you should use:\n"
-            f"  - Amazon Prime (any country): 1–2 day delivery → score 90–100 if in stock\n"
-            f"  - eMag.ro, Altex.ro, Flanco.ro in Romania: next-day or same-day → score 90\n"
-            f"  - MediaMarkt, Saturn (DE/AT/CH/RO): 1–3 days → score 80\n"
-            f"  - Zalando, ASOS, H&M (EU): 3–5 days standard → score 70\n"
-            f"  - Walmart.com (US), Target.com (US): 2–5 days standard → score 70\n"
-            f"  - AliExpress (global): 10–30 days → score 40\n"
-            f"Only fall back to the rubric below if the retailer is completely unknown to you:\n"
+            f"When no context block is present, fall back to:\n"
             f"  100 — In stock + same-day or next-day delivery confirmed on page\n"
             f"   70 — In stock + standard 2–5 day delivery confirmed on page\n"
-            f"   40 — Delivery time unverified and retailer unknown for {location_str}\n"
+            f"   40 — Delivery time unverified for {location_str}, stock status unclear\n"
             f"    0 — Confirmed out of stock or discontinued"
         )
         unverified_shipping_note = (
             f"5. If a VENDOR LOGISTICS CONTEXT block is present for a product, follow its "
             f"'→ LOGISTICS SCORE GUIDANCE' line. "
-            f"If no context block is present, use your knowledge of the retailer's typical "
-            f"delivery for {location_str} to assign the correct score. "
-            f"Only use score 40 if the retailer is completely unknown to you. "
-            f"Do NOT score 0 for missing logistics data."
+            f"If no context block is present and shipping to {location_str} is unverified, "
+            f"assign logistics score 40 and note \"Shipping time to {location_str} unverified\". "
+            f"Do NOT score 0."
         )
 
     # Build optional community picks block — injected when research found consensus
@@ -1004,9 +997,14 @@ well below the budget ceiling — excellent value for the price.' Flag any missi
   ]
 }}"""
 
+    # Compact prompt for the OpenAI fallback scorer.
+    # Omits full markdown, logistics context, and return policy text.
+    fallback_prompt = _build_compact_scoring_prompt(
+        scraped_results, search_description, budget_max, budget_currency, picks
+    )
     logger.info(
-        "[SCORING] sending %d products to Gemini (~%d tokens)",
-        len(scraped_results), len(prompt) // 4,
+        "[SCORING] sending %d products to Gemini (~%d tokens) / OpenAI fallback (~%d tokens)",
+        len(scraped_results), len(prompt) // 4, len(fallback_prompt) // 4,
     )
     ranked: list[dict] = []
     raw = ""
@@ -1019,31 +1017,27 @@ well below the budget ceiling — excellent value for the price.' Flag any missi
                 response_mime_type="application/json",
                 temperature=0.1,
                 max_output_tokens=8192,
-                # Disable "thinking" — on gemini-2.5-flash thinking tokens are drawn
-                # from the same max_output_tokens budget, which truncated the JSON
-                # (incomplete-JSON errors, especially on Lane B's larger prompts).
-                thinking_config=types.ThinkingConfig(thinking_budget=0),
             ),
         )
         raw = getattr(response, "text", None) or ""
         logger.info("[SCORING] Gemini response: %d chars — first 400: %s", len(raw), raw[:400])
-        try:
-            parsed = json.loads(raw)
-        except json.JSONDecodeError:
-            # Response was cut off mid-object — recover every complete product.
-            logger.warning("[SCORING] response truncated — salvaging complete products")
-            parsed = _salvage_ranked_products(raw)
-        ranked = parsed.get("ranked_products", [])
+        ranked = json.loads(raw).get("ranked_products", [])
         logger.info("[SCORING] parsed %d ranked_products", len(ranked))
     except errors.ServerError as exc:
-        logger.warning("[SCORING] Gemini overloaded: %s", exc)
-        raise RuntimeError("The AI is currently busy — please try again in a moment.") from exc
+        logger.warning("[SCORING] Gemini overloaded — routing to OpenAI fallback: %s", exc)
+        ranked = _openai_score(fallback_prompt)
+        if not ranked:
+            return []
     except (json.JSONDecodeError, AttributeError, TypeError, ValueError) as exc:
-        logger.warning("[SCORING] Gemini JSON parse failed (%s): %.200s", exc, raw)
-        return []
+        logger.warning("[SCORING] Gemini JSON parse failed (%s) — routing to OpenAI: %.200s", exc, raw)
+        ranked = _openai_score(fallback_prompt)
+        if not ranked:
+            return []
     except Exception as exc:
-        logger.warning("[SCORING] Gemini error: %s", exc)
-        raise
+        logger.warning("[SCORING] Gemini error — routing to OpenAI fallback: %s", exc)
+        ranked = _openai_score(fallback_prompt)
+        if not ranked:
+            return []
 
     # Reject hallucinated URLs. Only products whose URL came from Tavily (and is a real http URL)
     # are allowed through. This prevents example.com or invented URLs reaching the frontend.
@@ -1249,200 +1243,6 @@ def research_community_picks(
         logger.warning("[RESEARCH] community research failed: %s", exc)
 
     return {"recommendations": [], "insight": None}
-
-
-def extract_product_from_url(
-    url: str,
-    budget_max: Optional[float],
-    budget_currency: Optional[str],
-    category: str,
-    user_language: str = "English",
-) -> dict | None:
-    """
-    Lane B Extractor: given a guaranteed PDP URL discovered by Tavily, use Gemini's
-    Google Search Grounding to READ that specific page and return structured data.
-
-    Gemini's role is EXTRACTION ONLY — it cannot generate or modify URLs.
-    The URL is pinned to the caller's value regardless of what Gemini outputs,
-    which completely eliminates the 404 hallucination vector.
-
-    Returns dict {name, price, currency, url, in_stock, image_url} or None.
-    Runs synchronously — call via run_in_threadpool from async handlers.
-    """
-    budget_str = f"{budget_max} {budget_currency}" if budget_max else "any price"
-
-    prompt = (
-        f"You are a product data extractor with Google Search access.\n"
-        f"A user wants to buy a {category} with a budget of {budget_str}.\n\n"
-        f"Visit this EXACT URL and read the page:\n{url}\n\n"
-        f"Extract:\n"
-        f"1. Exact product name (title shown on the page)\n"
-        f"2. Price as a plain number (no currency symbols)\n"
-        f"3. Currency code (RON, EUR, USD, etc.)\n"
-        f"4. In-stock status — true if a buy/add-to-cart button is present, false if out of stock\n"
-        f"5. Main product image URL\n\n"
-        f"RULES:\n"
-        f"- 'url' in your response MUST be exactly: {url}\n"
-        f"  Copy it character-for-character. Do NOT generate or alter any URL.\n"
-        f"- If this page is a category list, search results, or error page: return null\n"
-        f"- If you cannot access the page: return null\n\n"
-        f"Return ONLY valid JSON (no markdown fences):\n"
-        f'{{"name":"exact title","price":0.0,"currency":"{budget_currency or "RON"}",'
-        f'"url":"{url}","in_stock":true,"image_url":null}}\n'
-        f"OR the single word: null"
-    )
-
-    try:
-        response = _with_backoff(
-            _client.models.generate_content,
-            model=_FLASH,
-            contents=[types.Content(role="user", parts=[types.Part(text=prompt)])],
-            config=types.GenerateContentConfig(
-                tools=[types.Tool(google_search=types.GoogleSearch())],
-                temperature=0.0,
-                max_output_tokens=512,
-                thinking_config=types.ThinkingConfig(thinking_budget=0),
-            ),
-        )
-        raw = (getattr(response, "text", None) or "").strip()
-        if not raw or raw.lower() == "null":
-            return None
-
-        matches = list(re.finditer(r"\{[^{}]+\}", raw, re.DOTALL))
-        for m in reversed(matches):
-            try:
-                data = json.loads(m.group())
-                returned_url = str(data.get("url") or "")
-                if returned_url != url:
-                    logger.warning(
-                        "[LANE-B] Gemini returned mutated URL (%s) — enforcing original (%s)",
-                        returned_url, url,
-                    )
-                return {
-                    "name": str(data.get("name") or "Unknown")[:200],
-                    "price": float(data.get("price") or 0),
-                    "currency": str(data.get("currency") or budget_currency or "RON"),
-                    "url": url,  # always the Tavily-sourced URL — never trust Gemini's version
-                    "in_stock": bool(data.get("in_stock", True)),
-                    "image_url": data.get("image_url"),
-                }
-            except (json.JSONDecodeError, ValueError):
-                continue
-    except Exception as exc:
-        logger.warning("[LANE-B] extract_product_from_url failed for %s: %s", url, exc)
-
-    return None
-
-
-def read_heavy_url_with_grounding(
-    url: str,
-    budget_max: Optional[float],
-    budget_currency: Optional[str],
-    category: str,
-    user_language: str = "English",
-) -> list[dict]:
-    """
-    Phase 4 Lane B: Gemini Flash + Google Search Grounding reads a category page or
-    enterprise URL and returns up to 3 specific in-stock products as structured cards.
-
-    Called for every heavy URL (enterprise giant, category page, unknown domain).
-    Runs synchronously — call via run_in_threadpool.
-
-    Returns list of dicts: [{name, price, currency, url, in_stock, image_url}].
-    Empty list on any failure or when no matching products are found.
-    """
-    budget_str = f"{budget_max} {budget_currency}" if budget_max else "any price"
-    parsed_domain = url.split("/")[2] if "//" in url else url.split("/")[0]
-
-    prompt = (
-        f"You are a product research assistant with access to Google Search.\n"
-        f"A user wants to buy a **{category}** with a budget of {budget_str}.\n\n"
-        f"Target retailer: {parsed_domain}\n"
-        f"Hint URL (may be a category or search page — treat it as retailer context only, "
-        f"do NOT return this URL as a result): {url}\n\n"
-        f"Task: Use Google Search to find up to 3 specific **{category}** products "
-        f"sold by {parsed_domain} that are currently in stock and priced at or under {budget_str}.\n\n"
-        f"Each result URL MUST be a product detail page (PDP) — a page for one single product.\n"
-        f"✓ Good PDP examples: amazon.com/dp/B0BVWGKM6V, emag.ro/produs-name/pd/ABCDEF, "
-        f"mediamarkt.de/product/-name-1234567.html, bestbuy.com/site/product/1234567.p\n"
-        f"✗ Bad URLs (never return these): amazon.com/s?k=..., emag.ro/laptopuri/c, "
-        f"any URL with /search, /category, /c/, /s?, /filter, or /browse in the path\n\n"
-        f"Return ONLY a raw JSON array (no markdown fences, no explanation):\n"
-        f'[\n  {{"name": "exact product name", "price": 0.0, '
-        f'"currency": "{budget_currency or "RON"}", '
-        f'"url": "direct product detail page URL", "in_stock": true, "image_url": null}}\n]\n\n'
-        f"Rules:\n"
-        f"- Each url must be the page for exactly one product, not a list or category\n"
-        f"- Return [] if no matching in-stock products are found within budget\n"
-        f"- Do NOT include any product priced above {budget_str}"
-    )
-
-    try:
-        response = _with_backoff(
-            _client.models.generate_content,
-            model=_FLASH,
-            contents=[types.Content(role="user", parts=[types.Part(text=prompt)])],
-            config=types.GenerateContentConfig(
-                tools=[types.Tool(google_search=types.GoogleSearch())],
-                temperature=0.1,
-                max_output_tokens=2048,
-                thinking_config=types.ThinkingConfig(thinking_budget=0),
-            ),
-        )
-        raw = (getattr(response, "text", None) or "").strip()
-        if not raw:
-            return []
-
-        # Extract the last JSON array in the response (model may echo the example first)
-        matches = list(re.finditer(r"\[[\s\S]*?\]", raw))
-        for m in reversed(matches):
-            try:
-                products = json.loads(m.group())
-                if not isinstance(products, list):
-                    continue
-                from services.scraper_service import is_likely_product_url, _CAT_PATH_RE, _CAT_PARAM_RE
-                valid: list[dict] = []
-                for p in products:
-                    if not isinstance(p, dict):
-                        continue
-                    url_val = str(p.get("url") or "")
-                    if not url_val.startswith("http"):
-                        continue
-                    # Hard-reject obvious category/search/listing URLs first.
-                    # _CAT_PATH_RE and _CAT_PARAM_RE catch /search, /category, ?q=, etc.
-                    if _CAT_PATH_RE.search(url_val) or _CAT_PARAM_RE.search(url_val):
-                        logger.info("[LANE-B] grounding returned category URL, skipping: %s", url_val)
-                        continue
-                    # Also reject bare domain roots and directory-style paths (trailing slash,
-                    # no numeric or slug identifier after the last real segment) — these are
-                    # retailer homepages or category hierarchies that slip through RULE 3.
-                    from urllib.parse import urlparse as _up
-                    _parsed = _up(url_val)
-                    _path = _parsed.path.rstrip("/")
-                    _segs = [s for s in _path.split("/") if s]
-                    if not _segs:
-                        logger.info("[LANE-B] grounding returned domain root, skipping: %s", url_val)
-                        continue
-                    if not is_likely_product_url(url_val):
-                        logger.info("[LANE-B] grounding returned category URL, skipping: %s", url_val)
-                        continue
-                    valid.append({
-                        "name": str(p.get("name") or "Unknown")[:200],
-                        "price": float(p.get("price") or 0),
-                        "currency": str(p.get("currency") or budget_currency or "RON"),
-                        "url": url_val,
-                        "in_stock": bool(p.get("in_stock", True)),
-                        "image_url": p.get("image_url"),
-                    })
-                if valid:
-                    logger.info("[LANE-B] grounding found %d product(s) for %s", len(valid), url)
-                    return valid
-            except (json.JSONDecodeError, ValueError):
-                continue
-    except Exception as exc:
-        logger.warning("[LANE-B] grounding failed for %s: %s", url, exc)
-
-    return []
 
 
 def generate_embedding(text: str) -> list[float]:

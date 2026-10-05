@@ -1,19 +1,19 @@
 """
-Front-end router: gpt-4o-mini for zero-latency intent classification.
+OpenAI (gpt-4o-mini) side of the pipeline:
 
-First gate in the pipeline — handles ALL intent classification, parameter
-extraction, and search query generation. Adds `is_mainstream` detection
-so commodity searches bypass the niche scraper and go directly to Gemini
-Search Grounding for live enterprise-retailer prices.
-
-Falls back to Gemini classify_intent on any OpenAI failure.
+  • classify_intent_and_route — first gate: intent classification, parameter
+    extraction and localized search query. Falls back to Gemini on failure.
+  • sanity_check_products     — verifies Gemini's ranked picks are the right
+    product type. Fails open.
+  • score_products            — fallback scorer when Gemini scoring fails.
 """
 import json
 import logging
 import time
 
 from core.config import settings
-from services.gemini_service import _SYSTEM_PROMPT as _GEMINI_PROMPT, _location_block
+# Same prompt as Gemini so both models return an identical dict shape.
+from services.gemini_service import _SYSTEM_PROMPT, _location_block
 
 logger = logging.getLogger(__name__)
 
@@ -30,53 +30,12 @@ except Exception as exc:
     logger.warning("[OPENAI-ROUTER] init failed: %s", exc)
 
 
-# Injected before ## REQUIRED OUTPUT FORMAT so the model learns the new field.
-_MAINSTREAM_SECTION = """
-## Mainstream Commodity Detection (SEARCH intent only)
-Set `is_mainstream` to true when the product is a mass-market commodity primarily sold by
-enterprise giants (Amazon, Walmart, eMag, MediaMarkt, Apple Store, Decathlon, Zalando,
-Target, Best Buy) AND essentially interchangeable across all major retailers.
-Examples of MAINSTREAM products (→ true):
-  ✓ Latest iPhone / Samsung Galaxy / Pixel flagship smartphones
-  ✓ PS5, Xbox Series X, Nintendo Switch gaming consoles
-  ✓ Specific major-brand TV models: "LG OLED C3 55 inch", "Samsung Neo QLED 65"
-  ✓ Major appliances: washing machine / fridge / dishwasher from Bosch/Samsung/LG/Whirlpool
-  ✓ Mass-market footwear sold everywhere: Nike Air Max, Adidas Ultraboost, Converse
-  ✓ Apple products (MacBook, iPad, AirPods) — sold through Apple Store and all chains
-  ✓ Commodity accessories: standard HDMI cables, USB hubs, phone screen protectors
-  ✓ Any product where the user names an exact model from a mass-distribution brand
-Examples of NICHE products (→ false, use niche scraper):
-  ✗ Specialty cycling / triathlon / climbing equipment
-  ✗ Independent or boutique fashion brands
-  ✗ Photography equipment from specialist retailers (camera shops, B&H, Adorama)
-  ✗ Artisan, handmade, or limited-run goods
-  ✗ Mid-market enthusiast electronics (custom PC parts, audiophile gear)
-  ✗ Any request where the user explicitly wants independent or specialty stores
-  ✗ Products from niche brands not sold on Amazon or major chains
-For CHAT/CLARIFY intent: always false.
-"""
-
-# Shared ShopperAI prompt (from Gemini) + mainstream detection + is_mainstream field.
-_SYSTEM_PROMPT = (
-    _GEMINI_PROMPT
-    .replace(
-        "## REQUIRED OUTPUT FORMAT",
-        _MAINSTREAM_SECTION + "\n## REQUIRED OUTPUT FORMAT",
-    )
-    .replace(
-        '  "language_code": "ISO 639-1 code of the user\'s language (e.g. \'en\', \'ro\', \'de\', \'fr\', \'it\', \'es\', \'pl\', \'nl\', \'pt\')"',
-        '  "language_code": "ISO 639-1 code of the user\'s language (e.g. \'en\', \'ro\', \'de\', \'fr\', \'it\', \'es\', \'pl\', \'nl\', \'pt\')",\n  "is_mainstream": false',
-    )
-)
-
 
 def classify_intent_and_route(messages, city: str = "", country: str = "") -> dict:
     """
-    gpt-4o-mini front-end router: full intent classification + mainstream detection.
+    gpt-4o-mini front-end router: intent classification + parameter extraction.
 
-    Returns the same dict shape as gemini_service.classify_intent plus:
-      - `is_mainstream` (bool) — True for commodity products, triggers grounding bypass.
-
+    Returns the same dict shape as gemini_service.classify_intent.
     Falls back to Gemini classify_intent if OpenAI is unavailable or fails.
     Runs synchronously — call via run_in_threadpool from async handlers.
     """
@@ -113,11 +72,9 @@ def classify_intent_and_route(messages, city: str = "", country: str = "") -> di
             )
             raw = resp.choices[0].message.content or ""
             result = json.loads(raw)
-            result.setdefault("is_mainstream", False)
             logger.info(
-                "[OPENAI-ROUTER] intent=%s is_mainstream=%s query=%r",
+                "[OPENAI-ROUTER] intent=%s query=%r",
                 result.get("intent"),
-                result.get("is_mainstream"),
                 result.get("localized_search_query"),
             )
             return result
@@ -144,13 +101,54 @@ def classify_intent_and_route(messages, city: str = "", country: str = "") -> di
     return _gemini_fallback(messages, city, country)
 
 
+def score_products(prompt: str) -> list[dict]:
+    """
+    Fallback scorer used by gemini_service.score_and_rank_products when Gemini fails.
+    Takes the compact scoring prompt and returns the `ranked_products` list in the
+    same shape Gemini produces. Returns [] when OpenAI is unavailable or fails, so
+    the caller's own fallbacks still apply.
+    Runs synchronously — call via run_in_threadpool from async handlers.
+    """
+    if not _openai_client:
+        logger.warning("[OPENAI-SCORE] no client configured — skipping fallback scorer")
+        return []
+
+    import openai as _openai_lib
+    delay = 1.0
+    for attempt in range(_BACKOFF_ATTEMPTS):
+        try:
+            resp = _openai_client.chat.completions.create(
+                model=_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                response_format={"type": "json_object"},
+                temperature=0.1,
+                max_tokens=4096,
+            )
+            raw = resp.choices[0].message.content or ""
+            ranked = json.loads(raw).get("ranked_products", [])
+            logger.info("[OPENAI-SCORE] fallback scorer returned %d products", len(ranked))
+            return ranked if isinstance(ranked, list) else []
+        except (_openai_lib.RateLimitError, _openai_lib.InternalServerError) as exc:
+            if attempt == _BACKOFF_ATTEMPTS - 1:
+                logger.error("[OPENAI-SCORE] failed after %d attempts: %s", _BACKOFF_ATTEMPTS, exc)
+                return []
+            logger.warning(
+                "[OPENAI-SCORE] attempt %d/%d overloaded, retrying in %.0fs…",
+                attempt + 1, _BACKOFF_ATTEMPTS, delay,
+            )
+            time.sleep(delay)
+            delay *= 2
+        except Exception as exc:
+            logger.error("[OPENAI-SCORE] failed: %s", exc)
+            return []
+    return []
+
+
 def _gemini_fallback(messages, city: str, country: str) -> dict:
     """Circuit-breaker fallback to Gemini when OpenAI is unavailable."""
     logger.warning("[OPENAI-ROUTER] activating Gemini classify_intent fallback")
     from services import gemini_service
-    result = gemini_service.classify_intent(messages, city, country)
-    result.setdefault("is_mainstream", False)
-    return result
+    return gemini_service.classify_intent(messages, city, country)
 
 
 def sanity_check_products(
