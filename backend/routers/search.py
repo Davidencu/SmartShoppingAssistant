@@ -532,6 +532,7 @@ async def _run_product_pipeline(
     community_picks: list[str] | None = None,
     specific_models: list[str] | None = None,
     no_global_supplement: bool = False,
+    shop_categories: frozenset[str] | None = None,
 ) -> list[dict]:
     """
     3-phase pipeline:
@@ -573,7 +574,7 @@ async def _run_product_pipeline(
         # Supplement with global e-commerce domains when local/model searches come up empty.
         # Skipped for is_global=True runs and for the niche-first pass (no_global_supplement=True)
         # so the caller can try mainstream country domains before jumping straight to global.
-        supplement_domains = retailers_service.get_global_domains() or None
+        supplement_domains = retailers_service.get_global_domains(shop_categories) or None
         if specific_models:
             seen_pdp = {r["url"] for r in tavily_results}
             for model in specific_models[:3]:
@@ -853,6 +854,11 @@ async def chat(
             excluded_keywords: list[str] = intent_data.get("excluded_keywords") or []
             price_floor: float | None = intent_data.get("price_floor") or None
             specific_models: list[str] | None = intent_data.get("specific_models") or None
+            # Which types of shop sell this product — restricts every domain lookup
+            # below. Empty set = unknown category → no filtering.
+            shop_categories = retailers_service.normalize_categories(
+                intent_data.get("shop_categories")
+            )
             gemini_domains: list[str] | None = (
                 None if search_globally else (intent_data.get("local_domains") or None)
             )
@@ -902,17 +908,21 @@ async def chat(
                 niche_domains = None
                 local_domains = gemini_domains or None
             else:
-                db_domains = retailers_service.get_domains_for_country(country_code)
-                niche_domains = retailers_service.get_niche_domains_for_country(country_code) or None
+                db_domains = retailers_service.get_domains_for_country(
+                    country_code, shop_categories
+                )
+                niche_domains = retailers_service.get_niche_domains_for_country(
+                    country_code, shop_categories
+                ) or None
                 local_domains = db_domains or gemini_domains or None
 
             deterministic_query, local_domains = _build_search_query(
                 gemini_localized_query, collected_params, local_domains
             )
             logger.info(
-                "[SEARCH] query=%r  country_code=%r  niche=%d  all=%d  city=%r  country=%r  "
-                "excluded=%d  global=%s  refinement=%s",
-                deterministic_query, country_code,
+                "[SEARCH] query=%r  country_code=%r  categories=%s  niche=%d  all=%d  "
+                "city=%r  country=%r  excluded=%d  global=%s  refinement=%s",
+                deterministic_query, country_code, sorted(shop_categories) or "any",
                 len(niche_domains or []), len(local_domains or []),
                 city, country, len(excluded_urls), search_globally, is_refinement,
             )
@@ -980,7 +990,7 @@ async def chat(
             # JSON-LD — combining both geographies maximises coverage without
             # touching proxy-required mainstream domains.
             ranked: list[dict] = []
-            global_niche = retailers_service.get_global_niche_domains()
+            global_niche = retailers_service.get_global_niche_domains(shop_categories)
             if search_globally:
                 combined_niche: list[str] | None = global_niche or None
             else:
@@ -998,6 +1008,7 @@ async def chat(
                     community_picks=community_picks or None,
                     specific_models=specific_models,
                     no_global_supplement=True,
+                    shop_categories=shop_categories,
                 )
 
             # 5b. Local mainstream when niche pass returns nothing.
@@ -1015,6 +1026,7 @@ async def chat(
                     price_floor=price_floor,
                     community_picks=community_picks or None,
                     specific_models=specific_models,
+                    shop_categories=shop_categories,
                 )
 
             # ── 6. Global mainstream fallback ────────────────────────────────
@@ -1025,7 +1037,9 @@ async def chat(
             if not ranked and (local_domains or search_globally):
                 logger.info("[SEARCH] niche+local scoring empty — retrying global mainstream")
                 await emit({"type": "status", "message": _t(detected_language, "global")})
-                global_mainstream = retailers_service.get_global_mainstream_domains() or None
+                global_mainstream = retailers_service.get_global_mainstream_domains(
+                    shop_categories
+                ) or None
                 ranked = await _run_product_pipeline(
                     deterministic_query, collected_params, city, country, global_mainstream,
                     excluded_urls or None, is_global=True,
@@ -1034,6 +1048,7 @@ async def chat(
                     price_floor=price_floor,
                     community_picks=community_picks or None,
                     specific_models=specific_models,
+                    shop_categories=shop_categories,
                 )
                 if ranked:
                     fallback_message = _t(detected_language, "fallback")

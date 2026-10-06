@@ -584,6 +584,33 @@ Example — user: "gaming laptop RTX 2000+ 16GB RAM under 10000 RON":
   ✗ specific_models: ["laptop RTX 2000 Ada 16GB"] — WRONG: workstation GPU
   ✗ localized_search_query: "laptop gaming RTX 2000 16GB RAM" — WRONG: maps to workstation series
 
+## Shop Categories (SEARCH intent only)
+Set `shop_categories` to 1–3 values from this fixed list describing which TYPE OF SHOP sells
+the product. It is used to pick retailers, so think "where would I buy this?", not "what is it?".
+Allowed values (use exactly these strings):
+  electronics, appliances, gaming, fashion, beauty, health, sports, cycling, outdoor,
+  books, home, diy, pets, toys, baby, music, auto
+Examples:
+  fridge / washing machine / vacuum / coffee machine → ["appliances"]
+  laptop / phone / TV / headphones / camera          → ["electronics"]
+  PS5 / video game / gaming headset                  → ["gaming", "electronics"]
+  running shoes                                      → ["sports", "fashion"]
+  winter jacket / dress / sneakers                   → ["fashion"]
+  perfume / lipstick / shampoo                       → ["beauty"]
+  vitamins / protein powder                          → ["health"]
+  mountain bike / bike helmet                        → ["cycling", "sports"]
+  tent / hiking backpack                             → ["outdoor", "sports"]
+  novel / textbook                                   → ["books"]
+  sofa / bed linen / lamp                            → ["home"]
+  drill / paint / garden hose                        → ["diy"]
+  dog food / cat litter                              → ["pets"]
+  LEGO / board game                                  → ["toys"]
+  stroller / baby bottle / teether                   → ["baby"]
+  guitar / studio microphone                         → ["music"]
+  car tyres / car battery                            → ["auto"]
+Use null when the product doesn't fit any category — the search then uses all shops.
+For CHAT/CLARIFY intent: always null.
+
 ## REQUIRED OUTPUT FORMAT
 Respond with a single valid JSON object. No markdown fences. No prose outside the JSON.
 The "local_domains" field must be either a JSON array of domain strings or JSON null — never \
@@ -606,6 +633,7 @@ any other value.
   "excluded_keywords": [],
   "price_floor": null,
   "specific_models": null,
+  "shop_categories": null,
   "language_code": "ISO 639-1 code of the user's language (e.g. 'en', 'ro', 'de', 'fr', 'it', 'es', 'pl', 'nl', 'pt')"
 }
 """
