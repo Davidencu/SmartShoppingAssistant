@@ -745,6 +745,65 @@ def classify_intent(messages, city: str = "", country: str = "") -> dict:
         return _clarify_fallback
 
 
+def _salvage_ranked_products(raw: str) -> dict:
+    """
+    Best-effort recovery of a truncated scoring response.
+
+    Gemini occasionally returns JSON cut off mid-object when the output token
+    budget is exhausted. Rather than naively trimming at the last "}," — which
+    usually lands inside the nested "scores" object and produces invalid JSON —
+    this walks the "ranked_products" array brace-by-brace (string- and
+    escape-aware) and keeps only the product objects that are fully closed,
+    discarding any partial trailing object.
+
+    Returns {"ranked_products": [...]} with every complete object recovered,
+    or {"ranked_products": []} when nothing usable can be salvaged.
+    """
+    key_idx = raw.find('"ranked_products"')
+    if key_idx == -1:
+        return {"ranked_products": []}
+    arr_start = raw.find("[", key_idx)
+    if arr_start == -1:
+        return {"ranked_products": []}
+
+    objects: list[str] = []
+    depth = 0
+    obj_start = -1
+    in_string = False
+    escaped = False
+    for i in range(arr_start + 1, len(raw)):
+        ch = raw[i]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch == "{":
+            if depth == 0:
+                obj_start = i
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0 and obj_start != -1:
+                objects.append(raw[obj_start:i + 1])
+                obj_start = -1
+        elif ch == "]" and depth == 0:
+            break
+
+    recovered: list[dict] = []
+    for obj in objects:
+        try:
+            recovered.append(json.loads(obj))
+        except json.JSONDecodeError:
+            continue
+    return {"ranked_products": recovered}
+
+
 def score_and_rank_products(
     scraped_results: list[dict],
     search_description: str,
@@ -1045,11 +1104,24 @@ well below the budget ceiling — excellent value for the price.' Flag any missi
                 response_mime_type="application/json",
                 temperature=0.1,
                 max_output_tokens=8192,
+                # Disable "thinking" — on gemini-2.5-flash thinking tokens are drawn
+                # from the same max_output_tokens budget and truncate the JSON answer.
+                thinking_config=types.ThinkingConfig(thinking_budget=0),
             ),
         )
         raw = getattr(response, "text", None) or ""
         logger.info("[SCORING] Gemini response: %d chars — first 400: %s", len(raw), raw[:400])
-        ranked = json.loads(raw).get("ranked_products", [])
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            # Response was cut off mid-object — recover every complete product.
+            # If nothing is recoverable, the ValueError below routes to OpenAI.
+            logger.warning("[SCORING] response truncated — salvaging complete products")
+            parsed = _salvage_ranked_products(raw)
+            if not parsed["ranked_products"]:
+                raise ValueError("truncated scoring response, nothing salvageable")
+            logger.info("[SCORING] salvaged %d product(s)", len(parsed["ranked_products"]))
+        ranked = parsed.get("ranked_products", [])
         logger.info("[SCORING] parsed %d ranked_products", len(ranked))
     except errors.ServerError as exc:
         logger.warning("[SCORING] Gemini overloaded — routing to OpenAI fallback: %s", exc)
